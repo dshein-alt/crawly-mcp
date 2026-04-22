@@ -23,6 +23,7 @@ The authoritative design document is [docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMEN
 - **beautifulsoup4** — HTML parsing for search result extraction.
 - **pytest** + **pytest-asyncio** — test runner; async tests are standard.
 - **ruff** — formatter and linter (black-compatible, `line-length = 88`). Configured in [pyproject.toml](pyproject.toml) with `E W F I B UP SIM C90 N S A C4 PIE RET ARG PTH ERA PL TRY RUF` plus isort for `crawly_mcp` as first-party.
+- **ast-index** — native Rust CLI for structural code lookup across the Python tree. Use it as the primary code-search tool in this repo: prefer `ast-index search`, `ast-index class`, `ast-index usages`, and `ast-index refs` over ad-hoc `grep`/`rg` when locating symbols, call sites, or implementations. Keep the index fresh with `ast-index update`, or rebuild from scratch with `ast-index rebuild` after large refactors. Useful entry points: `ast-index map`, `ast-index conventions`, `ast-index outline <file>`, and `ast-index changed --base main` before review. Fall back to `rg` only for regex patterns, comment content, or string literals that are not indexed.
 
 Common commands:
 
