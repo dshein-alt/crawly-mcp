@@ -64,3 +64,13 @@ uv run web-search serve-mcp        # MCP over stdio
 - Keep the `context` parameter name in the public `search` schema — it is deliberate for caller compatibility.
 - Lint before committing: `uv run ruff check . && uv run ruff format --check .`.
 - `.codex` and `.claude/` are gitignored; don't add them to commits.
+
+## Changelog
+
+[CHANGELOG.md](CHANGELOG.md) follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) with `Added` / `Changed` / `Fixed` sections under `[Unreleased]`.
+
+- Update `[Unreleased]` as part of the same change that introduces the behavior; don't batch after the fact.
+- Record only what differs from the previous version — user-visible behavior, public interfaces, tooling, and dependencies.
+- One line per entry, imperative mood, no in-depth technical details or module paths.
+- Match the existing record style: terse, single-sentence items (e.g. "SSRF guard for `fetch` URLs.", "Switched browser engine from Firefox to Chromium.").
+- Internal refactors with no observable effect don't belong in the changelog.
