@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import TypeAlias
 from urllib.parse import urlsplit
 
+from loguru import logger
 from playwright.async_api import BrowserContext, Route
 
 from crawly_mcp.errors import URLSafetyError
@@ -40,6 +41,12 @@ class URLSafetyGuard:
         try:
             await self._validate(request_url, allow_local_schemes=True)
         except URLSafetyError as exc:
+            logger.warning(
+                "ssrf reject url={!r} reason={} message={}",
+                request_url,
+                exc.error_type,
+                exc.message,
+            )
             self._blocked_requests.append(BlockedRequest(url=request_url, error=exc))
             await route.abort("blockedbyclient")
             return

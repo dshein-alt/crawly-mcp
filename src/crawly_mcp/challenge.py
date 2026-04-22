@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from bs4 import BeautifulSoup
+from loguru import logger
 
 from crawly_mcp.errors import ChallengeBlockedError
 
@@ -61,11 +62,14 @@ async def resolve_fetch_content(page: PageLike, *, settle_timeout_seconds: float
     if not looks_like_challenge(snapshot.url, snapshot.title, snapshot.html):
         return snapshot.html
 
+    logger.info("challenge detected url={!r} title={!r}", snapshot.url, snapshot.title)
     deadline = time.monotonic() + settle_timeout_seconds
     while time.monotonic() < deadline:
         await asyncio.sleep(0.5)
         snapshot = await snapshot_page(page)
         if not looks_like_challenge(snapshot.url, snapshot.title, snapshot.html):
+            logger.info("challenge settled url={!r}", snapshot.url)
             return snapshot.html
 
+    logger.warning("challenge unsettled url={!r}", snapshot.url)
     raise ChallengeBlockedError("page stayed on a browser challenge screen")

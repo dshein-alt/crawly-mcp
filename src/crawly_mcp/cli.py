@@ -5,6 +5,7 @@ import asyncio
 import json
 import sys
 
+from crawly_mcp._logging import configure_logging
 from crawly_mcp.browser import BrowserManager
 from crawly_mcp.errors import WebSearchError
 from crawly_mcp.service import WebSearchService
@@ -49,6 +50,7 @@ async def run_fetch_command(urls: list[str]) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    configure_logging()
 
     try:
         if args.command == "search":

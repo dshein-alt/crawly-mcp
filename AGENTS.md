@@ -24,6 +24,7 @@ The authoritative design document is [docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMEN
 - **pytest** + **pytest-asyncio** — test runner; async tests are standard.
 - **ruff** — formatter and linter (black-compatible, `line-length = 88`). Configured in [pyproject.toml](pyproject.toml) with `E W F I B UP SIM C90 N S A C4 PIE RET ARG PTH ERA PL TRY RUF` plus isort for `crawly_mcp` as first-party.
 - **ast-index** — native Rust CLI for structural code lookup across the Python tree. Use it as the primary code-search tool in this repo: prefer `ast-index search`, `ast-index class`, `ast-index usages`, and `ast-index refs` over ad-hoc `grep`/`rg` when locating symbols, call sites, or implementations. Keep the index fresh with `ast-index update`, or rebuild from scratch with `ast-index rebuild` after large refactors. Useful entry points: `ast-index map`, `ast-index conventions`, `ast-index outline <file>`, and `ast-index changed --base main` before review. Fall back to `rg` only for regex patterns, comment content, or string literals that are not indexed.
+- **loguru** — runtime logging. All modules log through `loguru.logger`; the `crawly_mcp._logging.configure_logging` helper installs a single stderr sink (critical for stdio MCP transport) and intercepts stdlib `logging` so uvicorn and MCP SDK logs share the same sink. Level is controlled by `CRAWLY_LOG_LEVEL` (default `INFO`; accepted values `TRACE DEBUG INFO WARNING ERROR CRITICAL`). Log entry/exit of tool calls at `INFO`; reserve `DEBUG` for fine-grained parser/challenge/timing traces.
 
 Common commands:
 

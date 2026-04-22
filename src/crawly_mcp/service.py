@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass
 from typing import Any
 
+from loguru import logger
 from playwright.async_api import (
     Error as PlaywrightError,
     TimeoutError as PlaywrightTimeoutError,
@@ -60,7 +62,13 @@ class WebSearchService:
         try:
             request = SearchRequest(provider=provider, context=context)
         except ValidationError as exc:
+            logger.warning("search rejected invalid input: {}", exc.errors()[0]["msg"])
             raise InvalidInputError(str(exc.errors()[0]["msg"])) from exc
+
+        logger.info(
+            "search entry provider={} context={!r}", request.provider, request.context
+        )
+        started = time.monotonic()
 
         guard = URLSafetyGuard()
         search_url = build_search_url(request.provider, request.context)
@@ -89,25 +97,53 @@ class WebSearchService:
                     title = await page.title()
                     html = await page.content()
                     if is_search_blocked(request.provider, page.url, title, html):
+                        logger.warning(
+                            "search blocked provider={} final_url={!r} title={!r}",
+                            request.provider,
+                            page.url,
+                            title,
+                        )
                         raise ProviderBlockedError("search provider returned a consent, CAPTCHA, or challenge page")
 
-                    return SearchResponse(urls=extract_search_results(request.provider, html, page.url))
+                    results = extract_search_results(request.provider, html, page.url)
+                    duration = time.monotonic() - started
+                    logger.info(
+                        "search done provider={} results={} final_url={!r} duration={:.2f}s",
+                        request.provider,
+                        len(results),
+                        page.url,
+                        duration,
+                    )
+                    return SearchResponse(urls=results)
                 finally:
                     await browser_context.close()
         except BrowserUnavailableError:
+            logger.error("search failed provider={} reason=browser_unavailable", request.provider)
             raise
         except URLSafetyError:
+            logger.warning("search rejected unsafe url={!r}", search_url)
             raise
-        except WebSearchError:
+        except WebSearchError as exc:
+            logger.warning(
+                "search failed provider={} type={} message={}",
+                request.provider,
+                exc.error_type,
+                exc.message,
+            )
             raise
         except TimeoutError as exc:
+            logger.warning("search timed out provider={}", request.provider)
             raise TimeoutExceededError("search exceeded the overall timeout") from exc
 
     async def fetch(self, *, urls: list[str]) -> FetchResponse:
         try:
             request = FetchRequest(urls=urls)
         except ValidationError as exc:
+            logger.warning("fetch rejected invalid input: {}", exc.errors()[0]["msg"])
             raise InvalidInputError(str(exc.errors()[0]["msg"])) from exc
+
+        logger.info("fetch entry urls_count={}", len(request.urls))
+        started = time.monotonic()
 
         response = FetchResponse()
         upfront_guard = URLSafetyGuard()
@@ -140,12 +176,23 @@ class WebSearchService:
                 finally:
                     await browser_context.close()
         except BrowserUnavailableError:
+            logger.error("fetch failed reason=browser_unavailable")
             raise
         except URLSafetyError:
+            logger.warning("fetch rejected by SSRF guard urls={}", request.urls)
             raise
         except TimeoutError as exc:
+            logger.warning("fetch timed out urls_count={}", len(request.urls))
             raise TimeoutExceededError("fetch exceeded the overall timeout") from exc
 
+        duration = time.monotonic() - started
+        logger.info(
+            "fetch done pages={} errors={} truncated={} duration={:.2f}s",
+            len(response.pages),
+            len(response.errors),
+            len(response.truncated),
+            duration,
+        )
         return response
 
     async def _fetch_one(

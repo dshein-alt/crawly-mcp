@@ -7,6 +7,7 @@ from contextlib import suppress
 from pathlib import Path
 
 import playwright.async_api as playwright_api
+from loguru import logger
 from playwright.async_api import (
     Browser,
     BrowserContext,
@@ -66,14 +67,17 @@ class BrowserManager:
             if self._browser is not None and self._browser.is_connected():
                 return self._browser
 
+            source = resolve_browser_source()
+            logger.info("chromium starting source={}", source)
             try:
                 if self._playwright is None:
                     self._playwright = await playwright_api.async_playwright().start()
                 launch_options = {"headless": True, "args": ["--disable-dev-shm-usage"]}
-                if resolve_browser_source() == BROWSER_SOURCE_SYSTEM:
+                if source == BROWSER_SOURCE_SYSTEM:
                     launch_options["executable_path"] = resolve_chromium_executable()
                 self._browser = await self._playwright.chromium.launch(**launch_options)
                 self._browser.on("disconnected", self._handle_disconnect)
+                logger.info("chromium ready source={}", source)
             except PlaywrightError as exc:
                 await self._shutdown_playwright()
                 browser_source = resolve_browser_source()
@@ -94,6 +98,7 @@ class BrowserManager:
             return self._browser
 
     def _handle_disconnect(self) -> None:
+        logger.warning("chromium disconnected; will relaunch on next request")
         self._browser = None
 
     async def _shutdown_playwright(self) -> None:

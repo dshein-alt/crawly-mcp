@@ -4,6 +4,7 @@ from collections.abc import Iterable
 from urllib.parse import parse_qs, quote_plus, unquote, urljoin, urlsplit
 
 from bs4 import BeautifulSoup
+from loguru import logger
 
 from crawly_mcp.constants import DEFAULT_PROVIDER, MAX_SEARCH_RESULTS
 
@@ -53,7 +54,8 @@ def extract_search_results(provider: str, html: str, base_url: str) -> list[str]
     urls: list[str] = []
 
     combined_selector = ", ".join(RESULT_SELECTORS[provider])
-    for anchor in soup.select(combined_selector):
+    raw_anchors = soup.select(combined_selector)
+    for anchor in raw_anchors:
         href = anchor.get("href")
         if not href:
             continue
@@ -63,8 +65,22 @@ def extract_search_results(provider: str, html: str, base_url: str) -> list[str]
         seen.add(normalized)
         urls.append(normalized)
         if len(urls) >= MAX_SEARCH_RESULTS:
-            return urls
+            break
 
+    logger.debug(
+        "parsing {} raw_anchors={} html_bytes={} returned={}",
+        provider,
+        len(raw_anchors),
+        len(html),
+        len(urls),
+    )
+    if not urls:
+        logger.warning(
+            "parsing {} returned zero results raw_anchors={} html_bytes={}",
+            provider,
+            len(raw_anchors),
+            len(html),
+        )
     return urls
 
 
