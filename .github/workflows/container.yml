@@ -84,22 +84,22 @@ jobs:
           file: ./Dockerfile
           load: true
           platforms: linux/amd64
-          tags: crawly:test
+          tags: crawly-mcp:test
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: Verify non-root runtime user
-        run: docker run --rm --entrypoint python --user pwuser crawly:test -c "import os; assert os.getuid() != 0"
+        run: docker run --rm --entrypoint python --user pwuser crawly-mcp:test -c "import os; assert os.getuid() != 0"
 
       - name: Start container
         run: |
           docker run -d --rm \
-            --name crawly-test \
+            --name crawly-mcp-test \
             --init \
             --user pwuser \
             --add-host=host.docker.internal:host-gateway \
             -p 8000:8000 \
-            crawly:test
+            crawly-mcp:test
 
       - name: Smoke test MCP over HTTP
         run: |
@@ -112,12 +112,12 @@ jobs:
             sleep 2
           done
 
-          docker logs crawly-test
+          docker logs crawly-mcp-test
           exit 1
 
       - name: Stop container
         if: always()
-        run: docker rm -f crawly-test || true
+        run: docker rm -f crawly-mcp-test || true
 
   publish:
     runs-on: ubuntu-latest
@@ -153,8 +153,8 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: |
-            ghcr.io/${{ github.repository_owner }}/crawly
-            ${{ vars.DOCKERHUB_NAMESPACE }}/crawly
+            ghcr.io/${{ github.repository_owner }}/crawly-mcp
+            ${{ vars.DOCKERHUB_NAMESPACE }}/crawly-mcp
           tags: |
             type=raw,value=${{ needs.classify.outputs.version }}
             type=raw,value=${{ needs.classify.outputs.major_minor }}
@@ -178,10 +178,10 @@ jobs:
         run: |
           docker buildx imagetools inspect \
             --format '{{json .Provenance}}' \
-            ghcr.io/${{ github.repository_owner }}/crawly:${{ needs.classify.outputs.version }} | grep -v '^null$'
+            ghcr.io/${{ github.repository_owner }}/crawly-mcp:${{ needs.classify.outputs.version }} | grep -v '^null$'
 
       - name: Verify SBOM attestation
         run: |
           docker buildx imagetools inspect \
             --format '{{json .SBOM}}' \
-            ghcr.io/${{ github.repository_owner }}/crawly:${{ needs.classify.outputs.version }} | grep -v '^null$'
+            ghcr.io/${{ github.repository_owner }}/crawly-mcp:${{ needs.classify.outputs.version }} | grep -v '^null$'

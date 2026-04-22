@@ -18,6 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Rename the project to crawly.
 - Rename the CLI and MCP executables to `crawly-cli` and `crawly-mcp`.
+- Rename the container image from `crawly` to `crawly-mcp` on GHCR and Docker Hub to match the PyPI distribution name.
 
 ### Fixed
 

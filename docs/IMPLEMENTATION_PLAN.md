@@ -89,8 +89,8 @@ This keeps branding, runtime behavior, and container/registry work independently
   - build `linux/amd64` and `linux/arm64`
   - use QEMU + buildx cache and explicitly accept slower arm64 builds on GitHub-hosted runners
   - publish to:
-    - `ghcr.io/<github-owner>/crawly`
-    - `<dockerhub-namespace>/crawly`
+    - `ghcr.io/<github-owner>/crawly-mcp`
+    - `<dockerhub-namespace>/crawly-mcp`
   - emit OCI labels plus buildx `--provenance=true --sbom=true`
   - defer signing and vulnerability scan gating to a follow-up
 - GHCR visibility:
@@ -122,7 +122,7 @@ This keeps branding, runtime behavior, and container/registry work independently
     - `docker buildx imagetools inspect --format "{{json .Provenance}}" <image>:<tag>`
   - verify SBOM is attached with a concrete buildx inspection command in the same CI job
 - Manual post-release:
-  - pull and run `crawly` from GHCR and Docker Hub
+  - pull and run `crawly-mcp` from GHCR and Docker Hub
   - run one real DuckDuckGo `search` request outside CI
 
 ## Assumptions and Defaults

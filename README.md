@@ -70,19 +70,19 @@ The container image uses Playwright-managed Chromium and defaults to HTTP MCP on
 Build locally:
 
 ```sh
-docker build -t crawly:local .
+docker build -t crawly-mcp:local .
 ```
 
 Run locally:
 
 ```sh
-docker run --rm --init -p 8000:8000 crawly:local
+docker run --rm --init -p 8000:8000 crawly-mcp:local
 ```
 
 Override the transport to stdio:
 
 ```sh
-docker run --rm --init -i crawly:local crawly-mcp --transport stdio
+docker run --rm --init -i crawly-mcp:local crawly-mcp --transport stdio
 ```
 
 The container defaults to:
@@ -95,8 +95,8 @@ The HTTP MCP endpoint is unauthenticated in v1. Deploy it behind localhost, a pr
 
 Published images are intended to be:
 
-- `ghcr.io/<owner>/crawly`
-- `<dockerhub-namespace>/crawly`
+- `ghcr.io/<owner>/crawly-mcp`
+- `<dockerhub-namespace>/crawly-mcp`
 
 The first GHCR publish may need a one-time manual visibility change to make the package public.
 
