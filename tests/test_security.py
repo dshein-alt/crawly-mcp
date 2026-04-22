@@ -2,8 +2,8 @@ import ipaddress
 
 import pytest
 
-from web_search_mcp.errors import URLSafetyError
-from web_search_mcp.security import URLSafetyGuard
+from crawly_mcp.errors import URLSafetyError
+from crawly_mcp.security import URLSafetyGuard
 
 
 @pytest.mark.asyncio

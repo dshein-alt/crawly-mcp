@@ -4,7 +4,7 @@ from typing import Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from web_search_mcp.constants import ALLOWED_PROVIDERS, DEFAULT_PROVIDER, MAX_FETCH_URLS
+from crawly_mcp.constants import ALLOWED_PROVIDERS, DEFAULT_PROVIDER, MAX_FETCH_URLS
 
 
 class SearchRequest(BaseModel):

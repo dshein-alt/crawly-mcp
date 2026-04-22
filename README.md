@@ -1,6 +1,15 @@
-# web-search-mcp
+# Crawly-MCP
 
-External web search and page fetch for local LLMs, exposed as MCP tools and a CLI. The implementation is Playwright-first, async, and launches the system-installed Chromium binary by default. The design history is documented in [docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md).
+Browser-backed web search and page fetch for local LLMs, exposed as MCP tools and a CLI.
+
+The design history is tracked in [docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md).
+
+## Naming
+
+- Python distribution: `crawly-mcp`
+- Import package: `crawly_mcp`
+- CLI executable: `crawly-cli`
+- MCP server executable: `crawly-mcp`
 
 ## Tools
 
@@ -16,36 +25,86 @@ uv sync
 chromium --version
 ```
 
-If Chromium is installed in a non-standard location, set
-`PLAYWRIGHT_CHROMIUM_EXECUTABLE=/path/to/chromium`.
-
-## Usage
-
-Run the MCP server over stdio:
+For host usage, crawly defaults to launching a system Chromium binary. If Chromium is installed in a non-standard location, set:
 
 ```sh
-uv run web-search serve-mcp
+PLAYWRIGHT_CHROMIUM_EXECUTABLE=/path/to/chromium
 ```
+
+To force Playwright-managed Chromium instead of a host browser:
+
+```sh
+PLAYWRIGHT_BROWSER_SOURCE=bundled
+```
+
+## Usage
 
 Run the CLI directly:
 
 ```sh
-uv run web-search search --context "python async playwright"
-uv run web-search fetch https://example.com
+uv run crawly-cli search --context "python async playwright"
+uv run crawly-cli fetch https://example.com
+```
+
+Run the MCP server over stdio:
+
+```sh
+uv run crawly-mcp
 ```
 
 Expose HTTP transport instead of stdio:
 
 ```sh
-uv run web-search serve-mcp --transport streamable-http --host 127.0.0.1 --port 8000
+uv run crawly-mcp --transport streamable-http --host 127.0.0.1 --port 8000
 ```
 
-## Design notes
+The MCP server also reads:
+
+- `CRAWLY_HOST`
+- `CRAWLY_PORT`
+
+## Container
+
+The container image uses Playwright-managed Chromium and defaults to HTTP MCP on port `8000`.
+
+Build locally:
+
+```sh
+docker build -t crawly:local .
+```
+
+Run locally:
+
+```sh
+docker run --rm --init -p 8000:8000 crawly:local
+```
+
+Override the transport to stdio:
+
+```sh
+docker run --rm --init -i crawly:local crawly-mcp --transport stdio
+```
+
+The container defaults to:
+
+- `PLAYWRIGHT_BROWSER_SOURCE=bundled`
+- `CRAWLY_HOST=0.0.0.0`
+- `CRAWLY_PORT=8000`
+
+The HTTP MCP endpoint is unauthenticated in v1. Deploy it behind localhost, a private network, or an auth/TLS reverse proxy.
+
+Published images are intended to be:
+
+- `ghcr.io/<owner>/crawly`
+- `<dockerhub-namespace>/crawly`
+
+The first GHCR publish may need a one-time manual visibility change to make the package public.
+
+## Design Notes
 
 - One shared browser per process, with a fresh incognito context per request.
-- Playwright launches the system Chromium binary, not a Playwright-downloaded browser bundle.
-- System Chromium worked with Playwright while the tested system Firefox build exited immediately after launch. This repo therefore targets system Chromium as the supported host-browser path.
-- Browser smoke tests should be run from a normal host shell. Restricted sandboxes can block Chromium startup even when the host browser works correctly.
+- `PLAYWRIGHT_BROWSER_SOURCE=system` uses a host Chromium binary.
+- `PLAYWRIGHT_BROWSER_SOURCE=bundled` uses Playwright-managed Chromium.
 - Global navigation concurrency cap of `3`.
 - Timeouts: `15s` per page, `20s` total for `search`, `35s` total for `fetch`.
 - SSRF guard: `http/https` only, no embedded credentials, blocks loopback/private/link-local/reserved IPs before navigation and on browser subrequests.
@@ -57,7 +116,15 @@ uv run web-search serve-mcp --transport streamable-http --host 127.0.0.1 --port 
 
 ```sh
 source .venv/bin/activate
+ruff check .
 pytest
+```
+
+Smoke checks:
+
+```sh
+rg -n "web-search|web_search_mcp" README.md AGENTS.md CHANGELOG.md pyproject.toml src tests
+.venv/bin/python scripts/http_mcp_smoke.py --url http://127.0.0.1:8000/mcp
 ```
 
 Parser tests run against saved HTML fixtures; selector drift is an expected maintenance cost.

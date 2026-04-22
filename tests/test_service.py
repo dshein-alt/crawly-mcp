@@ -6,8 +6,8 @@ from typing import Any
 
 import pytest
 
-from web_search_mcp.errors import ChallengeBlockedError
-from web_search_mcp.service import WebSearchService, truncate_html
+from crawly_mcp.errors import ChallengeBlockedError
+from crawly_mcp.service import WebSearchService, truncate_html
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -74,7 +74,7 @@ async def test_search_returns_extracted_urls_from_fixture(monkeypatch: pytest.Mo
     async def allow_all(self, url: str) -> None:
         del self, url
 
-    monkeypatch.setattr("web_search_mcp.service.URLSafetyGuard.validate_user_url", allow_all)
+    monkeypatch.setattr("crawly_mcp.service.URLSafetyGuard.validate_user_url", allow_all)
 
     result = await service.search(context="python")
 
@@ -94,7 +94,7 @@ async def test_fetch_returns_partial_success_and_truncation(monkeypatch: pytest.
     async def allow_all(self, url: str) -> None:
         del self, url
 
-    monkeypatch.setattr("web_search_mcp.service.URLSafetyGuard.validate_user_url", allow_all)
+    monkeypatch.setattr("crawly_mcp.service.URLSafetyGuard.validate_user_url", allow_all)
 
     async def fake_resolve_fetch_content(page: FakePage, *, settle_timeout_seconds: float) -> str:
         del settle_timeout_seconds
@@ -102,8 +102,8 @@ async def test_fetch_returns_partial_success_and_truncation(monkeypatch: pytest.
             raise ChallengeBlockedError("page stayed on a browser challenge screen")
         return "x" * 12
 
-    monkeypatch.setattr("web_search_mcp.service.resolve_fetch_content", fake_resolve_fetch_content)
-    monkeypatch.setattr("web_search_mcp.service.MAX_HTML_BYTES", 10)
+    monkeypatch.setattr("crawly_mcp.service.resolve_fetch_content", fake_resolve_fetch_content)
+    monkeypatch.setattr("crawly_mcp.service.MAX_HTML_BYTES", 10)
 
     result = await service.fetch(urls=urls)
 

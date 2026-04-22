@@ -5,7 +5,7 @@ from urllib.parse import parse_qs, quote_plus, unquote, urljoin, urlsplit
 
 from bs4 import BeautifulSoup
 
-from web_search_mcp.constants import DEFAULT_PROVIDER, MAX_SEARCH_RESULTS
+from crawly_mcp.constants import DEFAULT_PROVIDER, MAX_SEARCH_RESULTS
 
 PROVIDER_HOST_SUFFIXES = {
     "duckduckgo": ("duckduckgo.com", "duck.com"),

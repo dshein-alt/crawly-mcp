@@ -1,7 +1,7 @@
 import pytest
 
-from web_search_mcp.challenge import looks_like_challenge, resolve_fetch_content
-from web_search_mcp.errors import ChallengeBlockedError
+from crawly_mcp.challenge import looks_like_challenge, resolve_fetch_content
+from crawly_mcp.errors import ChallengeBlockedError
 
 
 class FakeChallengePage:
@@ -28,7 +28,7 @@ async def test_resolve_fetch_content_waits_for_challenge_to_clear(monkeypatch: p
     async def no_sleep(_: float) -> None:
         return None
 
-    monkeypatch.setattr("web_search_mcp.challenge.asyncio.sleep", no_sleep)
+    monkeypatch.setattr("crawly_mcp.challenge.asyncio.sleep", no_sleep)
     page = FakeChallengePage(
         [
             ("https://example.com/challenge", "Just a moment", "<html>Checking your browser</html>"),
@@ -46,7 +46,7 @@ async def test_resolve_fetch_content_reports_blocked_challenge(monkeypatch: pyte
     async def no_sleep(_: float) -> None:
         return None
 
-    monkeypatch.setattr("web_search_mcp.challenge.asyncio.sleep", no_sleep)
+    monkeypatch.setattr("crawly_mcp.challenge.asyncio.sleep", no_sleep)
     page = FakeChallengePage(
         [("https://example.com/challenge", "Just a moment", "<html>Checking your browser</html>")]
     )

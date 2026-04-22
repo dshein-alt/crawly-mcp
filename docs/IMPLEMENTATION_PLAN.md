@@ -1,131 +1,135 @@
-# External Web Search MCP Tool for Local LLMs
+# `crawly` Rebrand, Browser-Mode Split, and Ubuntu Container Release
 
 ## Summary
-Create a new Python project managed with `uv` that exposes two async operations as MCP tools and a CLI:
+Ship this as three PRs:
 
-- `search(provider: str | None = "duckduckgo", context: str)`:
-  run a browser-backed search on `duckduckgo`, `google`, or `yandex` and return up to 5 organic result URLs.
-- `fetch(urls: list[str])`:
-  fetch up to 5 URLs and return browser-rendered HTML for each successful URL.
+1. **Rebrand** the project to `crawly`
+2. **Add browser source selection** for host vs. bundled Playwright Chromium
+3. **Add the Ubuntu-based container and release CI**
 
-The implementation is Playwright-first, uses a shared long-lived browser with isolated per-request contexts, includes explicit SSRF protections, fixed concurrency/timeouts, and supports normal in-browser JavaScript execution for sites that gate access behind browser-computed challenge pages.
+This keeps branding, runtime behavior, and container/registry work independently reviewable and revertable.
 
 ## Public Interfaces
-- MCP tool `search`
-  - Input:
-    - `provider`: optional, default `"duckduckgo"`, allowed `duckduckgo|google|yandex`
-    - `context`: required string query
-  - Output:
-    - `urls: list[str]`
-  - Error cases:
-    - `invalid_provider`
-    - `invalid_input`
-    - `browser_unavailable`
-    - `provider_blocked`
-    - `timeout`
-  - Behavior:
-    - successful search with zero organic results returns `urls: []`
-    - `context` is kept intentionally for caller compatibility and documented as “search query text”
-- MCP tool `fetch`
-  - Input:
-    - `urls: list[str]`, required, length `1..5`
-  - Output:
-    - `pages: dict[str, str]`
-    - `errors: dict[str, { type: str, message: str }]`
-    - `truncated: list[str]`
-  - Behavior:
-    - partial success is normal
-    - MCP-level error only for invalid input or browser startup failure
-    - per-URL failures are reported in `errors`
-- CLI wrapper
-  - `web-search search --provider duckduckgo --context "..."`
-  - `web-search fetch <url1> <url2> ...`
-  - JSON output mirrors the MCP payloads
+- Product/repo/docs/server name: `crawly`
+- Python distribution name: `crawly-mcp`
+- Python import/package path: `crawly_mcp` (PEP 503-normalized form of the distribution name)
+- Console scripts:
+  - `crawly-cli` for `search` and `fetch`
+  - `crawly-mcp` for serving MCP
+- Remove `crawly-cli` and `crawly-mcp` immediately; no compatibility shims
+- Keep project version at `0.1.0`
+- Add:
+  - `PLAYWRIGHT_BROWSER_SOURCE=system|bundled`
+  - `CRAWLY_HOST`
+  - `CRAWLY_PORT`
+- Keep MCP tool names exactly: `search`, `fetch`
 
 ## Implementation Changes
-- Bootstrap with `uv`:
-  - `uv init`
-  - `uv add playwright <mcp-lib> pydantic`
-  - `uv add --dev pytest pytest-asyncio`
-  - document requirement for a host Chromium binary on `PATH` or an explicit `PLAYWRIGHT_CHROMIUM_EXECUTABLE` override
-- Browser/process model:
-  - one shared Playwright browser per server process
-  - one fresh incognito browser context per tool invocation
-  - one or more pages inside that context for the request
-  - browser manager recreates the shared browser if it crashes or disconnects
-  - no cookies, storage, or session state persist across requests
-- Concurrency and timeouts:
-  - process-wide semaphore limiting active page navigations to `3`
-  - `search` page timeout: `15s`, overall tool timeout: `20s`
-  - `fetch` per-URL timeout: `15s`, overall tool timeout: `35s`
-  - use `domcontentloaded` plus provider/page-specific readiness checks, not `networkidle`
-- SSRF and URL safety:
-  - accept only `http` and `https`
-  - reject URLs with embedded credentials
-  - block `localhost`, loopback, link-local, private, multicast, reserved, and unspecified IP targets
-  - resolve DNS before navigation; if any resolved A/AAAA record is non-public, reject the URL
-  - enforce the same checks on redirects and browser network requests via Playwright request interception
-  - explicitly block metadata-style targets such as `169.254.169.254`
-- JavaScript challenge handling:
-  - allow first-party page JavaScript to execute in a real browser context
-  - for `fetch`, after initial navigation, detect whether the page is still on an intermediate challenge screen
-  - wait up to a bounded “challenge settle” window of `10s` for same-tab navigation, DOM replacement, or a recognizable transition from challenge page to target page
-  - if the browser reaches the destination page within that window, return the final rendered HTML
-  - if the page remains blocked, report a per-URL `challenge_blocked` error
-  - do not add site-specific bypass code, CAPTCHA solving, proxy rotation, stealth plugins, or nonstandard fingerprint spoofing
-- Search extraction:
-  - separate browser navigation from HTML parsing/extraction logic
-  - parse provider result HTML using provider-specific adapters
-  - deduplicate and return the first 5 organic external URLs
-  - explicitly support known redirect wrappers:
-    - DuckDuckGo `/l/?uddg=...`
-    - Google `/url?q=...` and `/url?url=...`
-    - Yandex current wrapper/selectors are fixture-pinned from captured real result pages during implementation
-  - treat CAPTCHA/consent/challenge pages as `provider_blocked`
-- Fetch behavior:
-  - fetch pages concurrently within the global semaphore
-  - return `page.content()` HTML
-  - cap returned HTML at `1 MiB` per URL, UTF-8 truncated safely
-  - record truncated URLs in `truncated`
-- Documentation:
-  - README includes setup with `uv`, browser install, CLI usage, MCP usage, timeout/error semantics, and an explicit note that v1 does not consult `robots.txt`
+### PR 1: Rebrand
+- Rename `web-search-mcp` / `web_search_mcp` to `crawly` across metadata, source tree, imports, tests, docs, and server display name.
+- Set Python distribution metadata to `crawly-mcp` to avoid the existing PyPI `crawly` name collision; the import package follows the normalized form `crawly_mcp`.
+- Add one explicit README note explaining the naming:
+  - installable distribution: `crawly-mcp`
+  - import package: `crawly_mcp`
+  - executables: `crawly-cli`, `crawly-mcp`
+- Add reproducible verification for the rename using grep/find checks so reviewers can confirm no old `web-search-mcp*` or `web_search_mcp` names remain in tracked files.
+- Update `[Unreleased]` changelog with:
+  - `Changed: Rename the project to crawly.`
+  - `Changed: Rename the CLI and MCP executables to crawly-cli and crawly-mcp.`
+
+### PR 2: Browser Source Split
+- Extend browser startup logic to support:
+  - `system`: current host Chromium resolution with `PLAYWRIGHT_CHROMIUM_EXECUTABLE` or PATH
+  - `bundled`: launch Playwright Chromium without `executable_path`
+- Default to `system` when unset.
+- Keep current search/fetch behavior, SSRF policy, timeouts, and provider behavior unchanged.
+- Test this PR at the Playwright API boundary:
+  - mock `playwright.async_api.async_playwright`
+  - assert that bundled mode calls Chromium `launch(...)` without `executable_path`
+  - assert that system mode still passes `executable_path`
+- Explicitly note in the PR and docs that PR 2 does not prove bundled-mode launch end-to-end; real bundled-browser validation lands in PR 3.
+- Update `[Unreleased]` changelog with:
+  - `Added: Add PLAYWRIGHT_BROWSER_SOURCE to choose system or bundled Chromium.`
+
+### PR 3: Container and Release CI
+- Add a multi-stage `Dockerfile`.
+- Base image policy:
+  - use the official Playwright Python Ubuntu image
+  - pin by full version tag, not digest
+  - use a tag like `mcr.microsoft.com/playwright/python:v1.58.0-noble`
+  - verify the exact tag exists at PR 3 kickoff before coding
+- Builder/runtime strategy:
+  - install `uv` in the builder stage
+  - run `uv sync --frozen --no-dev`
+  - copy the built environment and app into the runtime stage
+  - use `COPY --chown=<runtime-user>:<runtime-user>` for app files and venv so runtime ownership is correct
+- Runtime user:
+  - prefer the Playwright image’s non-root `pwuser`
+  - if upstream behavior differs, set an explicit non-root user in the Dockerfile
+  - include a smoke test that runs under the non-root runtime user, not only default `docker run`
+- Runtime defaults:
+  - `PLAYWRIGHT_BROWSER_SOURCE=bundled`
+  - `CRAWLY_HOST=0.0.0.0`
+  - `CRAWLY_PORT=8000`
+  - command should read host/port from env
+  - primary interface: HTTP MCP on `streamable-http`
+- Security posture:
+  - no built-in HTTP auth in v1
+  - explicitly document the endpoint as unauthenticated
+  - document expected deployment behind localhost, private network, or an auth/TLS reverse proxy
+- `.dockerignore`:
+  - exclude `.git`, `.venv`, `tests/`, `docs/`, `AGENTS.md`, caches, and local metadata
+  - include `.ruff_cache/`, `.pytest_cache/`, and `.mypy_cache/` in the ignore list
+- Release workflow:
+  - build on PRs and default-branch pushes without publishing
+  - publish only on stable tags matching `^v[0-9]+\.[0-9]+\.[0-9]+$`
+  - only those same stable tags update `latest`
+  - no prerelease publishing and no nightly builds
+  - support manual dispatch for rebuild/retry
+  - build `linux/amd64` and `linux/arm64`
+  - use QEMU + buildx cache and explicitly accept slower arm64 builds on GitHub-hosted runners
+  - publish to:
+    - `ghcr.io/<github-owner>/crawly`
+    - `<dockerhub-namespace>/crawly`
+  - emit OCI labels plus buildx `--provenance=true --sbom=true`
+  - defer signing and vulnerability scan gating to a follow-up
+- GHCR visibility:
+  - include a one-time manual step to make the first GHCR package public if needed
+- Update `[Unreleased]` changelog with:
+  - `Added: Add an Ubuntu-based container image with Playwright-managed Chromium.`
+  - `Added: Add CRAWLY_HOST and CRAWLY_PORT environment variables for the MCP server.`
 
 ## Test Plan
-- Unit tests:
-  - provider validation/defaulting
-  - URL validation and max-5 enforcement
-  - SSRF guard for scheme, credentials, DNS resolution, and blocked IP classes
-  - redirect-unwrapping helpers
-  - truncation behavior and structured error shaping
-- Parser tests using saved HTML fixtures from real search result pages:
-  - DuckDuckGo extraction
-  - Google extraction
-  - Yandex extraction
-  - challenge/consent/no-results pages
-- Integration-style tests with mocked Playwright boundaries:
-  - browser manager lifecycle and restart-on-disconnect
-  - request interception blocks disallowed targets
-  - fetch partial-success behavior under timeout/navigation failures
-  - concurrency cap enforcement
-  - challenge flow where JS transitions from interstitial page to final page within timeout
-  - challenge flow that never resolves and returns `challenge_blocked`
-- CLI tests:
-  - command parsing
-  - JSON output shape
-  - invalid input exits non-zero with useful error text
-- Acceptance scenarios:
-  - omitted `provider` defaults to DuckDuckGo
-  - successful `search` returns `0..5` URLs
-  - blocked provider returns `provider_blocked`
-  - `fetch` returns `pages`, `errors`, and `truncated`
-  - private/loopback/link-local targets are rejected before fetch
+- Rebrand:
+  - imports resolve from `crawly_mcp`
+  - `crawly-cli --help` and `crawly-mcp --help` work
+  - reproducible grep check confirms no `web-search-mcp` or `web_search_mcp` remains in tracked files
+- Browser-mode split:
+  - default mode is `system`
+  - bundled mode skips host executable lookup
+  - system mode still honors `PLAYWRIGHT_CHROMIUM_EXECUTABLE`
+  - bundled-mode tests mock the Playwright boundary, not internal `BrowserManager` methods
+  - real bundled launch verification is deferred to PR 3
+- Container CI:
+  - build image successfully
+  - run container and verify HTTP MCP readiness on port `8000`
+  - use the MCP Python SDK `streamable_http` client for smoke tests
+  - assert `tools/list` returns exactly `search` and `fetch`
+  - call `fetch` against `https://example.com`
+  - run a local >1 MiB HTTP fixture and verify `truncated` is populated
+  - verify SSRF rejection for a private/container-network target from inside the container runtime path
+  - verify provenance is attached with:
+    - `docker buildx imagetools inspect --format "{{json .Provenance}}" <image>:<tag>`
+  - verify SBOM is attached with a concrete buildx inspection command in the same CI job
+- Manual post-release:
+  - pull and run `crawly` from GHCR and Docker Hub
+  - run one real DuckDuckGo `search` request outside CI
 
 ## Assumptions and Defaults
-- Greenfield repo; no existing project structure must be preserved.
-- Python baseline: `>=3.11`; local environment currently has Python `3.13` and `uv 0.11.7`.
-- v1 is Playwright/Chromium-only, using a system-installed Chromium binary rather than a Playwright-downloaded browser bundle.
-- `context` remains the public parameter name for compatibility with the requested tool contract.
-- `search` returning fewer than 5 URLs is acceptable; zero URLs is not itself an error.
-- `fetch` returns raw browser HTML, not readability text.
-- v1 does not honor `robots.txt`; this is an explicit product decision.
-- Selector/wrapper maintenance is an expected ongoing cost; fixture-based parser tests are the main guard against silent breakage.
+- `crawly` is the official user-facing name everywhere.
+- `crawly-mcp` is the Python distribution name only; the import package is `crawly_mcp` (PEP 503 normalized).
+- The rename is immediate and does not include deprecated aliases.
+- The version stays `0.1.0`.
+- HTTP MCP is the primary container interface; stdio is secondary via command override.
+- Container reproducibility comes from `uv.lock` plus an explicit Playwright image version tag, not from digest pinning.
+- No nightly images, prerelease images, automatic release artifacts, signing, or scan enforcement in v1.

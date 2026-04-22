@@ -5,14 +5,13 @@ import asyncio
 import json
 import sys
 
-from web_search_mcp.browser import BrowserManager
-from web_search_mcp.errors import WebSearchError
-from web_search_mcp.mcp_server import create_server
-from web_search_mcp.service import WebSearchService
+from crawly_mcp.browser import BrowserManager
+from crawly_mcp.errors import WebSearchError
+from crawly_mcp.service import WebSearchService
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Browser-backed external web search for local LLMs.")
+    parser = argparse.ArgumentParser(description="Browser-backed external web search CLI.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     search_parser = subparsers.add_parser("search", help="Run a search query and print result URLs as JSON.")
@@ -21,16 +20,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     fetch_parser = subparsers.add_parser("fetch", help="Fetch URLs and print rendered HTML as JSON.")
     fetch_parser.add_argument("urls", nargs="+", help="Up to 5 URLs to fetch.")
-
-    serve_parser = subparsers.add_parser("serve-mcp", help="Run the MCP server.")
-    serve_parser.add_argument(
-        "--transport",
-        default="stdio",
-        choices=("stdio", "sse", "streamable-http"),
-        help="MCP transport to expose.",
-    )
-    serve_parser.add_argument("--host", default="127.0.0.1", help="Host for HTTP-based transports.")
-    serve_parser.add_argument("--port", default=8000, type=int, help="Port for HTTP-based transports.")
 
     return parser
 
@@ -60,11 +49,6 @@ async def run_fetch_command(urls: list[str]) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-
-    if args.command == "serve-mcp":
-        server = create_server(host=args.host, port=args.port)
-        server.run(transport=args.transport)
-        return 0
 
     try:
         if args.command == "search":

@@ -6,22 +6,25 @@ import shutil
 from contextlib import suppress
 from pathlib import Path
 
+import playwright.async_api as playwright_api
 from playwright.async_api import (
     Browser,
     BrowserContext,
     Error as PlaywrightError,
     Page,
     Playwright,
-    async_playwright,
 )
 
-from web_search_mcp.constants import (
+from crawly_mcp.constants import (
+    ALLOWED_BROWSER_SOURCES,
+    BROWSER_SOURCE_SYSTEM,
     MAX_CONCURRENT_NAVIGATIONS,
+    PLAYWRIGHT_BROWSER_SOURCE_ENV_VAR,
     STANDARD_HEADERS,
     STANDARD_USER_AGENT,
     SYSTEM_CHROMIUM_ENV_VAR,
 )
-from web_search_mcp.errors import BrowserUnavailableError
+from crawly_mcp.errors import BrowserUnavailableError
 
 
 class BrowserManager:
@@ -65,19 +68,24 @@ class BrowserManager:
 
             try:
                 if self._playwright is None:
-                    self._playwright = await async_playwright().start()
-                executable_path = resolve_chromium_executable()
-                self._browser = await self._playwright.chromium.launch(
-                    headless=True,
-                    executable_path=executable_path,
-                    args=["--disable-dev-shm-usage"],
-                )
+                    self._playwright = await playwright_api.async_playwright().start()
+                launch_options = {"headless": True, "args": ["--disable-dev-shm-usage"]}
+                if resolve_browser_source() == BROWSER_SOURCE_SYSTEM:
+                    launch_options["executable_path"] = resolve_chromium_executable()
+                self._browser = await self._playwright.chromium.launch(**launch_options)
                 self._browser.on("disconnected", self._handle_disconnect)
             except PlaywrightError as exc:
                 await self._shutdown_playwright()
+                browser_source = resolve_browser_source()
+                if browser_source == BROWSER_SOURCE_SYSTEM:
+                    hint = (
+                        "failed to start system Chromium; set "
+                        f"`{SYSTEM_CHROMIUM_ENV_VAR}` to the Chromium binary path if needed"
+                    )
+                else:
+                    hint = "failed to start bundled Playwright Chromium"
                 raise BrowserUnavailableError(
-                    "failed to start system Chromium; set "
-                    f"`{SYSTEM_CHROMIUM_ENV_VAR}` to the Chromium binary path if needed"
+                    hint
                 ) from exc
             except Exception:
                 await self._shutdown_playwright()
@@ -121,4 +129,16 @@ def resolve_chromium_executable() -> str:
     raise BrowserUnavailableError(
         "system Chromium was not found in PATH; install Chromium or set "
         f"{SYSTEM_CHROMIUM_ENV_VAR}"
+    )
+
+
+def resolve_browser_source() -> str:
+    source = os.environ.get(PLAYWRIGHT_BROWSER_SOURCE_ENV_VAR, BROWSER_SOURCE_SYSTEM).strip().lower()
+    if not source:
+        return BROWSER_SOURCE_SYSTEM
+    if source in ALLOWED_BROWSER_SOURCES:
+        return source
+    allowed = ", ".join(ALLOWED_BROWSER_SOURCES)
+    raise BrowserUnavailableError(
+        f"{PLAYWRIGHT_BROWSER_SOURCE_ENV_VAR} must be one of: {allowed}"
     )

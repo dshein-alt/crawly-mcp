@@ -2,8 +2,8 @@ import json
 
 import pytest
 
-from web_search_mcp.cli import build_parser, main
-from web_search_mcp.errors import InvalidInputError
+from crawly_mcp.cli import build_parser, main
+from crawly_mcp.errors import InvalidInputError
 
 
 def test_build_parser_accepts_search_command() -> None:
@@ -20,7 +20,7 @@ def test_main_prints_structured_error_for_search(capsys: pytest.CaptureFixture[s
         del provider, context
         raise InvalidInputError("context must be a non-empty search query")
 
-    monkeypatch.setattr("web_search_mcp.cli.run_search_command", fake_search)
+    monkeypatch.setattr("crawly_mcp.cli.run_search_command", fake_search)
 
     exit_code = main(["search", "--context", "python"])
 

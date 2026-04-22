@@ -1,7 +1,7 @@
 [project]
-name = "web-search-mcp"
+name = "crawly-mcp"
 version = "0.1.0"
-description = "Browser-backed MCP search and fetch tools for local LLMs"
+description = "Browser-backed search and fetch tools for local LLMs"
 readme = "README.md"
 authors = [
     { name = "Danil Shein", email = "dshein@altlinux.org" }
@@ -15,12 +15,15 @@ dependencies = [
 ]
 
 [project.scripts]
-web-search = "web_search_mcp.cli:main"
-web-search-mcp = "web_search_mcp.cli:main"
+crawly-cli = "crawly_mcp.cli:main"
+crawly-mcp = "crawly_mcp.mcp_cli:main"
 
 [build-system]
 requires = ["uv_build>=0.11.7,<0.12.0"]
 build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "crawly_mcp"
 
 [dependency-groups]
 dev = [
@@ -80,7 +83,7 @@ max-returns = 6
 max-statements = 50
 
 [tool.ruff.lint.isort]
-known-first-party = ["web_search_mcp"]
+known-first-party = ["crawly_mcp"]
 combine-as-imports = true
 split-on-trailing-comma = true
 

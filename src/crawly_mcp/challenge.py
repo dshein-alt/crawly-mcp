@@ -7,7 +7,7 @@ from typing import Protocol
 
 from bs4 import BeautifulSoup
 
-from web_search_mcp.errors import ChallengeBlockedError
+from crawly_mcp.errors import ChallengeBlockedError
 
 
 class PageLike(Protocol):

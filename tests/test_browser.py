@@ -2,10 +2,15 @@ import asyncio
 import os
 from pathlib import Path
 
+import playwright.async_api as playwright_api
 import pytest
 
-from web_search_mcp.browser import BrowserManager, resolve_chromium_executable
-from web_search_mcp.errors import BrowserUnavailableError
+from crawly_mcp.browser import (
+    BrowserManager,
+    resolve_browser_source,
+    resolve_chromium_executable,
+)
+from crawly_mcp.errors import BrowserUnavailableError
 
 
 class Tracker:
@@ -75,3 +80,106 @@ def test_resolve_chromium_executable_raises_when_missing(
 
     with pytest.raises(BrowserUnavailableError, match="system Chromium was not found"):
         resolve_chromium_executable()
+
+
+def test_resolve_browser_source_defaults_to_system(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("PLAYWRIGHT_BROWSER_SOURCE", raising=False)
+
+    assert resolve_browser_source() == "system"
+
+
+@pytest.mark.asyncio
+async def test_bundled_browser_source_launches_without_executable_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    launch_calls: list[dict[str, object]] = []
+
+    class FakeBrowser:
+        def on(self, *_args: object) -> None:
+            return None
+
+        def is_connected(self) -> bool:
+            return True
+
+        async def close(self) -> None:
+            return None
+
+    class FakeChromium:
+        async def launch(self, **kwargs: object) -> FakeBrowser:
+            launch_calls.append(kwargs)
+            return FakeBrowser()
+
+    class FakePlaywright:
+        def __init__(self) -> None:
+            self.chromium = FakeChromium()
+
+        async def stop(self) -> None:
+            return None
+
+    class FakeAsyncPlaywrightManager:
+        async def start(self) -> FakePlaywright:
+            return FakePlaywright()
+
+    def fake_async_playwright() -> FakeAsyncPlaywrightManager:
+        return FakeAsyncPlaywrightManager()
+
+    monkeypatch.setenv("PLAYWRIGHT_BROWSER_SOURCE", "bundled")
+    monkeypatch.setattr(playwright_api, "async_playwright", fake_async_playwright)
+
+    manager = BrowserManager()
+    await manager.start()
+    await manager.close()
+
+    assert len(launch_calls) == 1
+    assert "executable_path" not in launch_calls[0]
+
+
+@pytest.mark.asyncio
+async def test_system_browser_source_launches_with_executable_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    launch_calls: list[dict[str, object]] = []
+
+    class FakeBrowser:
+        def on(self, *_args: object) -> None:
+            return None
+
+        def is_connected(self) -> bool:
+            return True
+
+        async def close(self) -> None:
+            return None
+
+    class FakeChromium:
+        async def launch(self, **kwargs: object) -> FakeBrowser:
+            launch_calls.append(kwargs)
+            return FakeBrowser()
+
+    class FakePlaywright:
+        def __init__(self) -> None:
+            self.chromium = FakeChromium()
+
+        async def stop(self) -> None:
+            return None
+
+    class FakeAsyncPlaywrightManager:
+        async def start(self) -> FakePlaywright:
+            return FakePlaywright()
+
+    def fake_async_playwright() -> FakeAsyncPlaywrightManager:
+        return FakeAsyncPlaywrightManager()
+
+    chromium_path = tmp_path / "chromium"
+    chromium_path.write_text("", encoding="utf-8")
+
+    monkeypatch.setenv("PLAYWRIGHT_BROWSER_SOURCE", "system")
+    monkeypatch.setenv("PLAYWRIGHT_CHROMIUM_EXECUTABLE", os.fspath(chromium_path))
+    monkeypatch.setattr(playwright_api, "async_playwright", fake_async_playwright)
+
+    manager = BrowserManager()
+    await manager.start()
+    await manager.close()
+
+    assert len(launch_calls) == 1
+    assert launch_calls[0]["executable_path"] == os.fspath(chromium_path)

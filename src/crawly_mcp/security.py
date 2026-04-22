@@ -9,7 +9,7 @@ from urllib.parse import urlsplit
 
 from playwright.async_api import BrowserContext, Route
 
-from web_search_mcp.errors import URLSafetyError
+from crawly_mcp.errors import URLSafetyError
 
 SAFE_NETWORK_SCHEMES = {"http", "https"}
 SAFE_LOCAL_SCHEMES = {"about", "blob", "data"}

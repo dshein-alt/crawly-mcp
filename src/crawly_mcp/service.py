@@ -10,9 +10,9 @@ from playwright.async_api import (
 )
 from pydantic import ValidationError
 
-from web_search_mcp.browser import BrowserManager
-from web_search_mcp.challenge import resolve_fetch_content
-from web_search_mcp.constants import (
+from crawly_mcp.browser import BrowserManager
+from crawly_mcp.challenge import resolve_fetch_content
+from crawly_mcp.constants import (
     CHALLENGE_SETTLE_TIMEOUT_SECONDS,
     FETCH_PAGE_TIMEOUT_SECONDS,
     FETCH_TOTAL_TIMEOUT_SECONDS,
@@ -20,7 +20,7 @@ from web_search_mcp.constants import (
     SEARCH_PAGE_TIMEOUT_SECONDS,
     SEARCH_TOTAL_TIMEOUT_SECONDS,
 )
-from web_search_mcp.errors import (
+from crawly_mcp.errors import (
     BrowserUnavailableError,
     InvalidInputError,
     NavigationFailedError,
@@ -29,19 +29,19 @@ from web_search_mcp.errors import (
     URLSafetyError,
     WebSearchError,
 )
-from web_search_mcp.models import (
+from crawly_mcp.models import (
     FetchError,
     FetchRequest,
     FetchResponse,
     SearchRequest,
     SearchResponse,
 )
-from web_search_mcp.parsing import (
+from crawly_mcp.parsing import (
     build_search_url,
     extract_search_results,
     is_search_blocked,
 )
-from web_search_mcp.security import URLSafetyGuard
+from crawly_mcp.security import URLSafetyGuard
 
 
 @dataclass(slots=True)

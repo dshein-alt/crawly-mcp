@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from web_search_mcp.parsing import (
+from crawly_mcp.parsing import (
     build_search_url,
     extract_search_results,
     is_search_blocked,

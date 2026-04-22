@@ -1,6 +1,6 @@
 from pydantic import ValidationError
 
-from web_search_mcp.models import FetchRequest, SearchRequest
+from crawly_mcp.models import FetchRequest, SearchRequest
 
 
 def test_search_request_defaults_provider_and_trims_context() -> None:
