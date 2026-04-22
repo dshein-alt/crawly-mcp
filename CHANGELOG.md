@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Initial release.
 - Add `PLAYWRIGHT_BROWSER_SOURCE` to choose system or bundled Chromium.
+- Add an Ubuntu-based container image with Playwright-managed Chromium.
 - Add `CRAWLY_HOST` and `CRAWLY_PORT` environment variables for the MCP server.
 
 ### Changed
