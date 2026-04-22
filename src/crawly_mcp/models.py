@@ -4,30 +4,23 @@ from typing import Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from crawly_mcp.constants import ALLOWED_PROVIDERS, DEFAULT_PROVIDER, MAX_FETCH_URLS
+from crawly_mcp.constants import DEFAULT_PROVIDER, MAX_FETCH_URLS, SearchProvider
 
 
 class SearchRequest(BaseModel):
-    provider: str | None = DEFAULT_PROVIDER
+    provider: SearchProvider | None = DEFAULT_PROVIDER
     context: str
 
     model_config = ConfigDict(extra="forbid")
 
     @field_validator("provider", mode="before")
     @classmethod
-    def default_provider(cls, value: str | None) -> str:
-        if value is None or value == "":
+    def default_provider(cls, value: object) -> object:
+        if value is None or (isinstance(value, str) and value.strip() == ""):
             return DEFAULT_PROVIDER
+        if isinstance(value, str):
+            return value.strip().lower()
         return value
-
-    @field_validator("provider")
-    @classmethod
-    def validate_provider(cls, value: str) -> str:
-        normalized = value.strip().lower()
-        if normalized not in ALLOWED_PROVIDERS:
-            allowed = ", ".join(ALLOWED_PROVIDERS)
-            raise ValueError(f"provider must be one of: {allowed}")
-        return normalized
 
     @field_validator("context")
     @classmethod
