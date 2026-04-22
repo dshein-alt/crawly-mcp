@@ -41,7 +41,7 @@ from crawly_mcp.models import (
 from crawly_mcp.parsing import (
     build_search_url,
     extract_search_results,
-    is_search_blocked,
+    search_block_marker,
 )
 from crawly_mcp.security import URLSafetyGuard
 
@@ -96,14 +96,7 @@ class WebSearchService:
 
                     title = await page.title()
                     html = await page.content()
-                    if is_search_blocked(request.provider, page.url, title, html):
-                        logger.warning(
-                            "search blocked provider={} final_url={!r} title={!r}",
-                            request.provider,
-                            page.url,
-                            title,
-                        )
-                        raise ProviderBlockedError("search provider returned a consent, CAPTCHA, or challenge page")
+                    self._raise_if_provider_blocked(request.provider, page.url, title, html)
 
                     results = extract_search_results(request.provider, html, page.url)
                     duration = time.monotonic() - started
@@ -134,6 +127,23 @@ class WebSearchService:
         except TimeoutError as exc:
             logger.warning("search timed out provider={}", request.provider)
             raise TimeoutExceededError("search exceeded the overall timeout") from exc
+
+    def _raise_if_provider_blocked(
+        self, provider: str, final_url: str, title: str, html: str
+    ) -> None:
+        marker = search_block_marker(provider, final_url, title, html)
+        if marker is None:
+            return
+        logger.warning(
+            "search blocked provider={} marker={!r} final_url={!r} title={!r}",
+            provider,
+            marker,
+            final_url,
+            title,
+        )
+        raise ProviderBlockedError(
+            f"search provider returned a consent, CAPTCHA, or challenge page (marker={marker!r})"
+        )
 
     async def fetch(self, *, urls: list[str]) -> FetchResponse:
         try:

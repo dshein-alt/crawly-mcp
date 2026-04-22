@@ -85,3 +85,13 @@ def test_is_search_blocked_detects_challenge_copy() -> None:
     html = "<html><body>Detected unusual traffic from your computer network.</body></html>"
 
     assert is_search_blocked("google", "https://www.google.com/sorry/index", "Sorry", html) is True
+
+
+def test_is_search_blocked_detects_duckduckgo_static_pages_redirect() -> None:
+    # DuckDuckGo serves its bot-detection page at /static-pages/418.html
+    # (observed in the wild). The markers must catch it even when the page
+    # text itself has no suspicious keywords.
+    url = "https://duckduckgo.com/static-pages/418.html?bno=84f2&is_tor=0&is_ar=0&is_netp=0"
+    html = "<html><body>Something went wrong.</body></html>"
+
+    assert is_search_blocked("duckduckgo", url, "DuckDuckGo", html) is True

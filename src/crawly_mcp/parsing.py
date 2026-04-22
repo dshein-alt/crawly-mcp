@@ -36,7 +36,12 @@ RESULT_SELECTORS = {
 }
 
 SEARCH_BLOCK_MARKERS = {
-    "duckduckgo": ("anomaly", "automated requests", "verify"),
+    "duckduckgo": (
+        "anomaly",
+        "automated requests",
+        "verify",
+        "static-pages",  # bot-detection redirect target, e.g. /static-pages/418.html
+    ),
     "google": ("before you continue", "detected unusual traffic", "sorry", "unusual traffic"),
     "yandex": ("robot", "captcha", "проверка", "unusual"),
 }
@@ -105,9 +110,23 @@ def normalize_result_url(provider: str, href: str, *, base_url: str) -> str | No
 
 
 def is_search_blocked(provider: str, url: str, title: str, html: str) -> bool:
+    return search_block_marker(provider, url, title, html) is not None
+
+
+def search_block_marker(provider: str, url: str, title: str, html: str) -> str | None:
+    """Return the marker that flagged this page as a provider block, or None.
+
+    Checking the URL, title, and first 4 KiB of rendered text is enough to
+    catch DuckDuckGo `/static-pages/418.html` redirects, Google `/sorry`
+    interstitials, and Yandex CAPTCHA pages without false-positives on real
+    result pages.
+    """
     text = BeautifulSoup(html, "html.parser").get_text(" ", strip=True)[:4000].lower()
     haystack = " ".join((url.lower(), title.lower(), text))
-    return any(marker in haystack for marker in SEARCH_BLOCK_MARKERS[provider])
+    for marker in SEARCH_BLOCK_MARKERS[provider]:
+        if marker in haystack:
+            return marker
+    return None
 
 
 def _is_internal_provider_url(provider: str, hostname: str | None) -> bool:
