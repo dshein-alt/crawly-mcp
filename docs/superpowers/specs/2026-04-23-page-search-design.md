@@ -64,6 +64,22 @@ class PageSearchResponse(BaseModel):
 - `mode` names the single tier that produced `results`. If all tiers were tried and text produced zero matches, `mode="text"`, `results=[]`.
 - `attempted` is the ordered list of tiers that were actually invoked. Tiers skipped by detection (e.g. no Algolia config on the page) do not appear in `attempted`; only tiers whose execute step ran do.
 - A response where `mode == attempted[-1]` means every earlier tier was either not detected or failed; a response where `mode == attempted[0]` means the first-detected tier succeeded on its first attempt.
+- **Example:** Algolia config detected but returned 0 hits; OpenSearch not detected; Readthedocs not detected (wrong host); generic form detected and produced results. Then `attempted=["algolia","form"]`, `mode="form"`.
+
+**Tier interface (informal):**
+
+```python
+@dataclass
+class DetectResult:
+    ...  # tier-specific payload (e.g. Algolia config, form action+input name)
+
+class Tier(Protocol):
+    name: PageSearchMode
+    def detect(self, source_html: str, source_url: str) -> DetectResult | None: ...
+    async def execute(self, hit: DetectResult, query: str) -> list[PageSearchResult]: ...
+```
+
+Each tier is an independent unit: `detect` is pure (HTML in, payload out, no I/O), `execute` does the I/O. The orchestrator owns timeouts, error isolation, and `attempted` bookkeeping.
 
 ## Three-tier cascade
 
@@ -72,7 +88,7 @@ The cascade is orchestrated by a new `PageSearchService` in `src/crawly_mcp/page
 ### Tier 1a — Algolia DocSearch
 
 - **Detect:** inspect source HTML for references to `@docsearch/js` / `@docsearch/react` in `<script>` tags, or a `<div id="docsearch">` / `<input id="docsearch-input">`, or an inline initialization block containing `appId`, `apiKey`, `indexName` (pattern match on common forms: `docsearch({...})`, `window.docSearchConfig = {...}`, JSON island `<script type="application/json">`). Extract the three config values.
-- **Execute:** POST to `https://{appId}-dsn.algolia.net/1/indexes/{indexName}/query` with headers `X-Algolia-Application-Id`, `X-Algolia-API-Key` and body `{"params": "query=<urlencoded query>&hitsPerPage=5"}`. Use `httpx.AsyncClient` with `PAGE_SEARCH_TIER_TIMEOUT_SECONDS`.
+- **Execute:** POST to the Algolia query endpoint with headers `X-Algolia-Application-Id`, `X-Algolia-API-Key` and body `{"params": "query=<urlencoded query>&hitsPerPage=5"}`. Use `httpx.AsyncClient` with `PAGE_SEARCH_TIER_TIMEOUT_SECONDS`. Endpoint host is `{appId}-dsn.algolia.net` (the canonical DocSearch DSN) unless the detected config specifies an explicit `apiUrl` / `host`, in which case honor it **only after** passing it through `URLSafetyGuard.validate_user_url()` — an attacker-controlled Algolia config on a malicious page must not be able to redirect us to a private-IP host.
 - **Extract:** for each `hit` in the response, emit `PageSearchResult(url=hit["url"], title=_join_hierarchy(hit["hierarchy"]), snippet=hit["_snippetResult"]["content"]["value"])`. Strip Algolia's `<em>` highlight markers from snippet before returning.
 - **Credentials note:** Algolia appId/apiKey in DocSearch configs are intentionally public — they're frontend JS keys scoped to the index. This is not a secrets leak.
 
@@ -84,7 +100,7 @@ The cascade is orchestrated by a new `PageSearchService` in `src/crawly_mcp/page
 
 ### Tier 1c — Readthedocs API
 
-- **Detect:** source URL hostname ends with `.readthedocs.io` or `.readthedocs-hosted.com`. Extract `project` slug and `version` from the URL path (`/en/stable/...` → project from hostname subdomain, version from path segment 2). Skip if the path doesn't match the expected `/<lang>/<version>/...` shape.
+- **Detect:** source URL hostname ends with `.readthedocs.io` or `.readthedocs-hosted.com`, AND the hostname has a non-empty subdomain, AND the path matches `/<language>/<version>/<...>` with at least two leading segments. Extract `project = <subdomain>`, `version = <path-segment-2>`. Skip (detection miss, not failure) when any condition doesn't hold — this naturally drops subprojects, translations, and the readthedocs.org root.
 - **Execute:** `httpx` GET `https://readthedocs.org/api/v2/search/?q=<query>&project=<slug>&version=<version>`. Timeout as above.
 - **Extract:** the API returns `results[]` with nested `blocks[]`; flatten to the top 5 blocks with `PageSearchResult(url=<project result URL + block anchor>, title=<block title>, snippet=<block content highlighted text with <span> markers stripped>)`.
 
@@ -107,28 +123,36 @@ The cascade is orchestrated by a new `PageSearchService` in `src/crawly_mcp/page
 ## Orchestration
 
 ```
-source_fetch = fetch source page via ephemeral context (same path as fetch() uses)
-if source_fetch fails → raise WebSearchError("navigation_failed")
+async with asyncio.timeout(FETCH_TOTAL_TIMEOUT_SECONDS):  # outer clamp
+    source_html = fetch source page (raw HTML, before text extraction)
+    if source fetch fails → raise WebSearchError("navigation_failed")
 
-for tier in [algolia, opensearch, readthedocs, form]:
-    if tier.detect(source_html, source_url):
+    for tier in [algolia, opensearch, readthedocs, form]:
+        hit = tier.detect(source_html, source_url)
+        if hit is None:
+            continue
         attempted.append(tier.name)
         try:
-            results = await asyncio.wait_for(tier.execute(...), PAGE_SEARCH_TIER_TIMEOUT_SECONDS)
-        except (Timeout, TierExecutionError):
+            results = await asyncio.wait_for(tier.execute(hit, query),
+                                             PAGE_SEARCH_TIER_TIMEOUT_SECONDS)
+        except (asyncio.TimeoutError, TierExecutionError) as exc:
+            logger.warning("page_search tier={} failed: {}", tier.name, exc)
             continue
         if results:
             return PageSearchResponse(mode=tier.name, attempted=attempted, ...)
 
-# Text tier is unconditional
-attempted.append("text")
-text_results = build_snippets(...)
-return PageSearchResponse(mode="text", attempted=attempted, results=text_results, ...)
+    # Text tier is unconditional (but still subject to the outer clamp)
+    attempted.append("text")
+    text_results = build_snippets(source_html, query)
+    return PageSearchResponse(mode="text", attempted=attempted, results=text_results, ...)
 ```
 
-- Per-tier budget: `PAGE_SEARCH_TIER_TIMEOUT_SECONDS = 10`.
-- Total endpoint budget: reuse `FETCH_TOTAL_TIMEOUT_SECONDS = 35` (source fetch + up to four tiers × 10s exceeds 35s only in pathological cascades; `asyncio.wait_for` at the outer level clamps).
-- Each tier is independently failure-isolated — a raised exception inside a tier is caught and logged; cascade continues.
+- **Per-tier budget:** `PAGE_SEARCH_TIER_TIMEOUT_SECONDS = 10`.
+- **Total endpoint budget:** `FETCH_TOTAL_TIMEOUT_SECONDS = 35`, enforced by an outer `asyncio.timeout()`.
+- **Worst-case cascade is longer than the outer budget.** Source fetch may use up to `FETCH_PAGE_TIMEOUT_SECONDS = 15`, and four tiers × 10s = 40s, summing to 55s. The outer clamp will therefore fire mid-cascade in pathological cases.
+- **On outer-timeout mid-cascade:** the `asyncio.TimeoutError` from the outer `asyncio.timeout()` is mapped to `TimeoutExceededError` (same mapping `search()` uses today). The client receives a timeout error, not a partial response. Tier 3 is **not** guaranteed to run — if tier 1a burns most of the budget, the tier-3 fallback may be preempted. This is documented behavior; callers who want a text-only fallback under tight budgets should call `page_search` again with a narrower effective scope (future enhancement: `mode_preference` param to skip tier 1/2).
+- **Per-tier isolation:** a raised exception inside a tier's execute step is caught and logged at warn level; cascade continues. Only an outer-clamp timeout or a source-fetch failure aborts the whole call.
+- **Raw HTML, not rendered text.** The source fetch captures the *raw* HTML DOM (what `page.content()` returns), not the text-extracted form produced by `render_fetch_content`. All detectors need the original DOM — Algolia config is in `<script>` tags that `extract_readable_text` strips; OpenSearch `<link>` lives in `<head>`; the generic form detector needs the full `<form>` tree.
 
 ## Network & browser strategy
 
@@ -162,8 +186,26 @@ SSRF protection: `URLSafetyGuard.validate_user_url(url)` is called before every 
 | `src/crawly_mcp/cli.py` | Add `page-search` subcommand. |
 | `src/crawly_mcp/service.py` | Expose `extract_readable_text` as module-level function (it already is — just import) for reuse from `page_search.py`. |
 | `pyproject.toml` | Bump version `0.1.0` → `0.2.0`; add explicit `httpx` dependency. |
-| `CHANGELOG.md` | New `## [0.2.0]` section per AGENTS.md rule. |
+| `CHANGELOG.md` | Add a `## [0.2.0]` section above the existing `## [0.1.0]` stub (leave 0.1.0 intact — it ships empty from the initial release and is not rewritten here). |
 | `README.md` | Document the new tool under "Tools" and `page-search` CLI under "Integration Setup". |
+
+**CLI surface:** `crawly-cli page-search --url URL --query TEXT` prints the `PageSearchResponse` as JSON on stdout. Errors go to stderr as structured JSON with non-zero exit, matching the existing `search` / `fetch` subcommands.
+
+## Limits and truncation
+
+- No new env vars. Reuse `MAX_SEARCH_RESULTS=5` for the result cap and `CRAWLY_FETCH_MAX_SIZE` for the response-body cap.
+- Per-tier timeout `PAGE_SEARCH_TIER_TIMEOUT_SECONDS = 10`; snippet context window `PAGE_SEARCH_SNIPPET_CONTEXT_CHARS = 240`. Both are constants; add env-var tunability only on demand.
+- **Source-HTML fetch is not size-capped by `CRAWLY_FETCH_MAX_SIZE`.** Truncating the source HTML would cause detectors to miss Algolia / OpenSearch config past the cut and would shrink the tier-3 search corpus. The source fetch receives the full raw HTML that `page.content()` returns; Chromium itself bounds the worst case. The `CRAWLY_FETCH_MAX_SIZE` cap applies only to the outgoing `PageSearchResponse`.
+- **Response truncation is new logic, not a reuse of `service.truncate_content`.** `truncate_content` caps a single string; the response is a structured object. Add `_truncate_page_search_response(response, limit_bytes)` in `page_search.py`:
+
+  ```
+  serialize response to JSON, encode UTF-8; if byte length <= limit_bytes: return.
+  Otherwise drop the last element of response.results, re-serialize, repeat until
+  byte length <= limit_bytes or results is empty. Set response.truncated = True
+  on any drop.
+  ```
+
+  Snippet-sized results (each ≤ 240 chars + small URL/title) make triggering this a safety net, not a normal path.
 
 ## Error handling
 
@@ -177,8 +219,9 @@ SSRF protection: `URLSafetyGuard.validate_user_url(url)` is called before every 
 | Tier detect step returns false | tier not in `attempted`, cascade continues silently |
 | Tier execute step times out | tier in `attempted`, cascade continues, warn-level log |
 | Tier execute step raises | tier in `attempted`, cascade continues, warn-level log with exception summary |
+| Outer budget (`FETCH_TOTAL_TIMEOUT_SECONDS`) elapses mid-cascade | raised as `TimeoutExceededError` — caller sees an error, no partial response. Tier 3 is not guaranteed to have run. |
 | All tiers exhausted, text tier finds zero matches | valid response, `mode="text"`, `results=[]`, `truncated=False` |
-| Response body exceeds `CRAWLY_FETCH_MAX_SIZE` after serialization | truncate `results` list from the end, set `truncated=True` |
+| Response body exceeds `CRAWLY_FETCH_MAX_SIZE` after serialization | `_truncate_page_search_response` drops trailing results, sets `truncated=True` |
 
 ## Logging
 
