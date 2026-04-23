@@ -62,7 +62,7 @@ def configure_logging(
 
     logger.remove()
     logger.add(
-        sink if sink is not None else sys.stderr,
+        sink if sink is not None else sys.stderr, # type: ignore
         level=resolved,
         format=_LOG_FORMAT,
         colorize=sink is None,
