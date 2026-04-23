@@ -183,3 +183,21 @@ async def test_system_browser_source_launches_with_executable_path(
 
     assert len(launch_calls) == 1
     assert launch_calls[0]["executable_path"] == os.fspath(chromium_path)
+
+
+def test_context_options_reads_tz_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TZ", "Europe/Berlin")
+    manager = BrowserManager()
+    opts = manager._context_options()
+    assert opts["timezone_id"] == "Europe/Berlin"
+    assert opts["locale"] == "en-US"
+    assert opts["viewport"] == {"width": 1366, "height": 768}
+    assert opts["java_script_enabled"] is True
+    assert "sec-ch-ua" in opts["extra_http_headers"]
+
+
+def test_context_options_defaults_timezone_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("TZ", raising=False)
+    manager = BrowserManager()
+    opts = manager._context_options()
+    assert opts["timezone_id"] == "America/New_York"

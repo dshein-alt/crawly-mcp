@@ -5,6 +5,7 @@ import os
 import shutil
 from contextlib import suppress
 from pathlib import Path
+from typing import Any
 
 import patchright.async_api as playwright_api
 from loguru import logger
@@ -19,6 +20,7 @@ from patchright.async_api import (
 from crawly_mcp.constants import (
     ALLOWED_BROWSER_SOURCES,
     BROWSER_SOURCE_SYSTEM,
+    DEFAULT_TIMEZONE_ID,
     MAX_CONCURRENT_NAVIGATIONS,
     PLAYWRIGHT_BROWSER_SOURCE_ENV_VAR,
     STANDARD_HEADERS,
@@ -40,14 +42,18 @@ class BrowserManager:
 
     async def new_context(self) -> BrowserContext:
         browser = await self._ensure_browser()
-        return await browser.new_context(
-            user_agent=STANDARD_USER_AGENT,
-            locale="en-US",
-            timezone_id="UTC",
-            viewport={"width": 1366, "height": 768},
-            java_script_enabled=True,
-            extra_http_headers=STANDARD_HEADERS,
-        )
+        return await browser.new_context(**self._context_options())
+
+    def _context_options(self) -> dict[str, Any]:
+        tz = os.environ.get("TZ") or DEFAULT_TIMEZONE_ID
+        return {
+            "user_agent": STANDARD_USER_AGENT,
+            "locale": "en-US",
+            "timezone_id": tz,
+            "viewport": {"width": 1366, "height": 768},
+            "java_script_enabled": True,
+            "extra_http_headers": STANDARD_HEADERS,
+        }
 
     async def goto(self, page: Page, url: str, *, timeout_ms: int) -> None:
         async with self._navigation_semaphore:
