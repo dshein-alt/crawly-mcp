@@ -41,4 +41,31 @@ STANDARD_HEADERS = {
     "Cache-Control": "no-cache",
     "Pragma": "no-cache",
     "Upgrade-Insecure-Requests": "1",
+    "sec-ch-ua": '"Chromium";v="146", "Not)A;Brand";v="8", "Google Chrome";v="146"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Linux"',
+}
+
+# --- stealth / persistent-profile configuration ---
+
+CRAWLY_USE_XVFB_ENV_VAR = "CRAWLY_USE_XVFB"
+CRAWLY_XVFB_GEOMETRY_ENV_VAR = "CRAWLY_XVFB_GEOMETRY"
+CRAWLY_PROFILE_DIR_ENV_VAR = "CRAWLY_PROFILE_DIR"
+CRAWLY_PROFILE_CLEANUP_ON_START_ENV_VAR = "CRAWLY_PROFILE_CLEANUP_ON_START"
+CRAWLY_PROFILE_MAX_AGE_DAYS_ENV_VAR = "CRAWLY_PROFILE_MAX_AGE_DAYS"
+CRAWLY_SEARCH_JITTER_MS_ENV_VAR = "CRAWLY_SEARCH_JITTER_MS"
+
+DEFAULT_XVFB_GEOMETRY = "1280x720x24"
+DEFAULT_PROFILE_DIR = "~/.cache/crawly/profiles"
+DEFAULT_PROFILE_MAX_AGE_DAYS = 14
+DEFAULT_SEARCH_JITTER_MS: tuple[int, int] = (500, 1500)
+DEFAULT_TIMEZONE_ID = "America/New_York"
+
+WARMUP_PAGE_TIMEOUT_SECONDS = 3
+SEARCH_CONTEXT_ACQUIRE_TIMEOUT_SECONDS = 10
+
+PROVIDER_HOMEPAGE: dict[str, str] = {
+    "duckduckgo": "https://duckduckgo.com/",
+    "google": "https://www.google.com/",
+    "yandex": "https://yandex.ru/",
 }
