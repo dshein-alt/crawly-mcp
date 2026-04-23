@@ -14,6 +14,7 @@ from crawly_mcp.constants import (
     PLAYWRIGHT_BROWSER_SOURCE_ENV_VAR,
 )
 from crawly_mcp.mcp_server import create_server
+from crawly_mcp.version import get_package_version
 
 
 def _default_port() -> int:
@@ -50,8 +51,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     configure_logging()
     browser_source = os.environ.get(PLAYWRIGHT_BROWSER_SOURCE_ENV_VAR, "system")
+    package_version = get_package_version()
     logger.info(
-        "crawly mcp starting transport={} host={} port={} browser_source={}",
+        "crawly mcp starting version={} transport={} host={} port={} browser_source={}",
+        package_version,
         args.transport,
         args.host,
         args.port,

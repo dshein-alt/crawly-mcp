@@ -4,7 +4,13 @@ from typing import Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from crawly_mcp.constants import DEFAULT_PROVIDER, MAX_FETCH_URLS, SearchProvider
+from crawly_mcp.constants import (
+    DEFAULT_FETCH_CONTENT_FORMAT,
+    DEFAULT_PROVIDER,
+    MAX_FETCH_URLS,
+    FetchContentFormat,
+    SearchProvider,
+)
 
 
 class SearchRequest(BaseModel):
@@ -37,6 +43,7 @@ class SearchResponse(BaseModel):
 
 class FetchRequest(BaseModel):
     urls: list[str]
+    content_format: FetchContentFormat = DEFAULT_FETCH_CONTENT_FORMAT
 
     model_config = ConfigDict(extra="forbid")
 
@@ -58,6 +65,7 @@ class FetchError(BaseModel):
 
 
 class FetchResponse(BaseModel):
+    content_format: FetchContentFormat = DEFAULT_FETCH_CONTENT_FORMAT
     pages: dict[str, str] = Field(default_factory=dict)
     errors: dict[str, FetchError] = Field(default_factory=dict)
     truncated: list[str] = Field(default_factory=list)

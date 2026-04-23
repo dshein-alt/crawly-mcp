@@ -9,12 +9,26 @@ def test_new_stealth_constants_exported() -> None:
     assert constants.BROWSER_LOCATION_ENV_VAR == "CRAWLY_BROWSER_LOCATION"
     assert constants.BROWSER_VIEWPORT_ENV_VAR == "CRAWLY_BROWSER_VIEWPORT"
     assert constants.CRAWLY_TRACE_DIR_ENV_VAR == "CRAWLY_TRACE_DIR"
+    assert (
+        constants.CRAWLY_FETCH_CONTENT_FORMAT_ENV_VAR == "CRAWLY_FETCH_CONTENT_FORMAT"
+    )
+    assert constants.CRAWLY_FETCH_MAX_SIZE_ENV_VAR == "CRAWLY_FETCH_MAX_SIZE"
     assert constants.CRAWLY_PROFILE_DIR_ENV_VAR == "CRAWLY_PROFILE_DIR"
-    assert constants.CRAWLY_PROFILE_CLEANUP_ON_START_ENV_VAR == "CRAWLY_PROFILE_CLEANUP_ON_START"
-    assert constants.CRAWLY_PROFILE_MAX_AGE_DAYS_ENV_VAR == "CRAWLY_PROFILE_MAX_AGE_DAYS"
+    assert (
+        constants.CRAWLY_PROFILE_CLEANUP_ON_START_ENV_VAR
+        == "CRAWLY_PROFILE_CLEANUP_ON_START"
+    )
+    assert (
+        constants.CRAWLY_PROFILE_MAX_AGE_DAYS_ENV_VAR == "CRAWLY_PROFILE_MAX_AGE_DAYS"
+    )
     assert constants.CRAWLY_SEARCH_JITTER_MS_ENV_VAR == "CRAWLY_SEARCH_JITTER_MS"
-    assert constants.CRAWLY_USE_PERSISTENT_PROFILES_ENV_VAR == "CRAWLY_USE_PERSISTENT_PROFILES"
+    assert (
+        constants.CRAWLY_USE_PERSISTENT_PROFILES_ENV_VAR
+        == "CRAWLY_USE_PERSISTENT_PROFILES"
+    )
     assert constants.DEFAULT_PROFILE_DIR == "~/.cache/crawly/profiles"
+    assert constants.DEFAULT_FETCH_CONTENT_FORMAT == "html"
+    assert constants.DEFAULT_MAX_FETCH_SIZE == 1024 * 1024
     assert constants.DEFAULT_PROFILE_MAX_AGE_DAYS == 14
     assert constants.DEFAULT_SEARCH_JITTER_MS == (500, 1500)
     assert constants.DEFAULT_BROWSER_LANG == "ru-RU"

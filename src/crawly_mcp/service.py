@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from bs4 import BeautifulSoup
 from loguru import logger
 from patchright.async_api import (
     Error as PlaywrightError,
@@ -22,18 +23,20 @@ from crawly_mcp.browser import BrowserManager
 from crawly_mcp.challenge import resolve_fetch_content
 from crawly_mcp.constants import (
     CHALLENGE_SETTLE_TIMEOUT_SECONDS,
+    CRAWLY_FETCH_MAX_SIZE_ENV_VAR,
     CRAWLY_SEARCH_JITTER_MS_ENV_VAR,
     CRAWLY_TRACE_DIR_ENV_VAR,
+    DEFAULT_MAX_FETCH_SIZE,
     DEFAULT_SEARCH_JITTER_MS,
     FETCH_PAGE_TIMEOUT_SECONDS,
     FETCH_TOTAL_TIMEOUT_SECONDS,
-    MAX_HTML_BYTES,
     PROVIDER_HOMEPAGE,
     SEARCH_CONTEXT_ACQUIRE_TIMEOUT_SECONDS,
     SEARCH_PAGE_TIMEOUT_SECONDS,
     SEARCH_TOTAL_TIMEOUT_SECONDS,
     TRACE_CAPTURE_TIMEOUT_SECONDS,
     WARMUP_PAGE_TIMEOUT_SECONDS,
+    FetchContentFormat,
 )
 from crawly_mcp.errors import (
     BrowserUnavailableError,
@@ -104,9 +107,17 @@ class SearchTrace:
     def attach(self, page: Any) -> None:
         if not hasattr(page, "on"):
             return
-        page.on("request", lambda request: self._schedule(self._capture_request(request)))
-        page.on("response", lambda response: self._schedule(self._capture_response(response)))
-        page.on("requestfailed", lambda request: self._schedule(self._capture_request_failed(request)))
+        page.on(
+            "request", lambda request: self._schedule(self._capture_request(request))
+        )
+        page.on(
+            "response",
+            lambda response: self._schedule(self._capture_response(response)),
+        )
+        page.on(
+            "requestfailed",
+            lambda request: self._schedule(self._capture_request_failed(request)),
+        )
         page.on("popup", self._capture_popup)
 
     def _schedule(self, coro: Any) -> None:
@@ -153,7 +164,11 @@ class SearchTrace:
         if isinstance(failure, dict):
             error_text = failure.get("errorText")
         else:
-            error_text = getattr(failure, "error_text", None) or str(failure) if failure else None
+            error_text = (
+                getattr(failure, "error_text", None) or str(failure)
+                if failure
+                else None
+            )
         self.network_events.append(
             {
                 "type": "requestfailed",
@@ -189,7 +204,9 @@ class SearchTrace:
 
         if hasattr(page, "screenshot"):
             with suppress(Exception):
-                await page.screenshot(path=str(self.output_dir / "screenshot.png"), full_page=True)
+                await page.screenshot(
+                    path=str(self.output_dir / "screenshot.png"), full_page=True
+                )
 
         if final_html is not None:
             (self.output_dir / "page.html").write_text(final_html, encoding="utf-8")
@@ -251,14 +268,18 @@ class WebSearchService:
     def __init__(self, browser_manager: BrowserManager) -> None:
         self._browser_manager = browser_manager
 
-    async def search(self, *, provider: str | None = None, context: str) -> SearchResponse:
+    async def search(
+        self, *, provider: str | None = None, context: str
+    ) -> SearchResponse:
         try:
             request = SearchRequest(provider=provider, context=context)
         except ValidationError as exc:
             logger.warning("search rejected invalid input: {}", exc.errors()[0]["msg"])
             raise InvalidInputError(str(exc.errors()[0]["msg"])) from exc
 
-        logger.info("search entry provider={} context={!r}", request.provider, request.context)
+        logger.info(
+            "search entry provider={} context={!r}", request.provider, request.context
+        )
         started = time.monotonic()
         trace = SearchTrace.create(request.provider, request.context)
 
@@ -277,8 +298,12 @@ class WebSearchService:
         trace_html: str | None = None
         try:
             return await self._run_search_with_timeout(
-                handle=handle, page=page, request=request,
-                search_url=search_url, started=started, trace=trace,
+                handle=handle,
+                page=page,
+                request=request,
+                search_url=search_url,
+                started=started,
+                trace=trace,
             )
         except (BrowserUnavailableError, URLSafetyError, WebSearchError) as exc:
             self._handle_search_error(
@@ -322,7 +347,9 @@ class WebSearchService:
                 error_type="browser_unavailable",
                 message="browser unavailable",
             )
-            logger.error("search failed provider={} reason=browser_unavailable", provider)
+            logger.error(
+                "search failed provider={} reason=browser_unavailable", provider
+            )
             return
         if isinstance(error, URLSafetyError):
             _record_trace_failure(
@@ -354,7 +381,9 @@ class WebSearchService:
             if trace is not None:
                 trace.search_url = search_url
                 trace.first_use = handle.first_use
-                trace.context_options = _context_options_for_trace(self._browser_manager)
+                trace.context_options = _context_options_for_trace(
+                    self._browser_manager
+                )
                 trace.attach(page)
             if handle.first_use:
                 if trace is not None:
@@ -365,10 +394,14 @@ class WebSearchService:
                 trace.jitter_ms = jitter_ms
             try:
                 await self._browser_manager.goto(
-                    page, search_url, timeout_ms=SEARCH_PAGE_TIMEOUT_SECONDS * 1000,
+                    page,
+                    search_url,
+                    timeout_ms=SEARCH_PAGE_TIMEOUT_SECONDS * 1000,
                 )
             except PlaywrightTimeoutError as exc:
-                raise TimeoutExceededError("search timed out before the results page loaded") from exc
+                raise TimeoutExceededError(
+                    "search timed out before the results page loaded"
+                ) from exc
             except PlaywrightError as exc:
                 blocked = handle.guard.pop_blocked_error(page)
                 if blocked is not None:
@@ -382,7 +415,9 @@ class WebSearchService:
                 trace.final_url = page.url
                 trace.final_title = title
                 trace.block_marker = marker
-            self._raise_if_provider_blocked(request.provider, page.url, title, html, marker=marker)
+            self._raise_if_provider_blocked(
+                request.provider, page.url, title, html, marker=marker
+            )
 
             results = extract_search_results(request.provider, html, page.url)
             if trace is not None:
@@ -390,14 +425,18 @@ class WebSearchService:
             duration = time.monotonic() - started
             logger.info(
                 "search done provider={} results={} final_url={!r} duration={:.2f}s",
-                request.provider, len(results), page.url, duration,
+                request.provider,
+                len(results),
+                page.url,
+                duration,
             )
             return SearchResponse(urls=results)
 
     async def _maybe_warmup(self, page: Any, provider: str) -> None:
         try:
             await self._browser_manager.goto(
-                page, PROVIDER_HOMEPAGE[provider],
+                page,
+                PROVIDER_HOMEPAGE[provider],
                 timeout_ms=WARMUP_PAGE_TIMEOUT_SECONDS * 1000,
             )
         except (PlaywrightTimeoutError, PlaywrightError) as exc:
@@ -417,7 +456,13 @@ class WebSearchService:
         return jitter_ms
 
     def _raise_if_provider_blocked(
-        self, provider: str, final_url: str, title: str, html: str, *, marker: str | None = None
+        self,
+        provider: str,
+        final_url: str,
+        title: str,
+        html: str,
+        *,
+        marker: str | None = None,
     ) -> None:
         if marker is None:
             marker = search_block_marker(provider, final_url, title, html)
@@ -434,9 +479,14 @@ class WebSearchService:
             f"search provider returned a consent, CAPTCHA, or challenge page (marker={marker!r})"
         )
 
-    async def fetch(self, *, urls: list[str]) -> FetchResponse:
+    async def fetch(
+        self,
+        *,
+        urls: list[str],
+        content_format: FetchContentFormat = "html",
+    ) -> FetchResponse:
         try:
-            request = FetchRequest(urls=urls)
+            request = FetchRequest(urls=urls, content_format=content_format)
         except ValidationError as exc:
             logger.warning("fetch rejected invalid input: {}", exc.errors()[0]["msg"])
             raise InvalidInputError(str(exc.errors()[0]["msg"])) from exc
@@ -445,6 +495,7 @@ class WebSearchService:
         started = time.monotonic()
 
         response = FetchResponse()
+        response.content_format = request.content_format
         upfront_guard = URLSafetyGuard()
         for url in request.urls:
             await upfront_guard.validate_user_url(url)
@@ -456,7 +507,14 @@ class WebSearchService:
                 await guard.attach(browser_context)
                 try:
                     tasks = [
-                        asyncio.create_task(self._fetch_one(browser_context, guard, url))
+                        asyncio.create_task(
+                            self._fetch_one(
+                                browser_context,
+                                guard,
+                                url,
+                                content_format=request.content_format,
+                            )
+                        )
                         for url in request.urls
                     ]
                     for outcome in await asyncio.gather(*tasks):
@@ -499,6 +557,8 @@ class WebSearchService:
         browser_context: Any,
         guard: URLSafetyGuard,
         url: str,
+        *,
+        content_format: FetchContentFormat,
     ) -> FetchOutcome:
         page = await browser_context.new_page()
         try:
@@ -518,11 +578,15 @@ class WebSearchService:
                 if blocked is not None:
                     return FetchOutcome(
                         url=url,
-                        error=FetchError(type=blocked.error_type, message=blocked.message),
+                        error=FetchError(
+                            type=blocked.error_type, message=blocked.message
+                        ),
                     )
                 return FetchOutcome(
                     url=url,
-                    error=FetchError(type="navigation_failed", message=f"navigation failed: {exc}"),
+                    error=FetchError(
+                        type="navigation_failed", message=f"navigation failed: {exc}"
+                    ),
                 )
 
             try:
@@ -536,16 +600,95 @@ class WebSearchService:
                     error=FetchError(type=exc.error_type, message=exc.message),
                 )
 
-            content, truncated = truncate_html(html, limit_bytes=MAX_HTML_BYTES)
+            content = render_fetch_content(
+                html,
+                content_format=content_format,
+            )
+            content, truncated = truncate_content(
+                content, limit_bytes=resolve_fetch_max_size()
+            )
             return FetchOutcome(url=url, html=content, truncated=truncated)
         finally:
             await page.close()
 
 
-def truncate_html(html: str, *, limit_bytes: int) -> tuple[str, bool]:
-    encoded = html.encode("utf-8")
+def resolve_fetch_max_size() -> int:
+    raw = os.environ.get(CRAWLY_FETCH_MAX_SIZE_ENV_VAR, "").strip()
+    if not raw:
+        return DEFAULT_MAX_FETCH_SIZE
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning(
+            "invalid {}={!r}; using default {}",
+            CRAWLY_FETCH_MAX_SIZE_ENV_VAR,
+            raw,
+            DEFAULT_MAX_FETCH_SIZE,
+        )
+        return DEFAULT_MAX_FETCH_SIZE
+    if value <= 0:
+        logger.warning(
+            "non-positive {}={!r}; using default {}",
+            CRAWLY_FETCH_MAX_SIZE_ENV_VAR,
+            raw,
+            DEFAULT_MAX_FETCH_SIZE,
+        )
+        return DEFAULT_MAX_FETCH_SIZE
+    return value
+
+
+def render_fetch_content(html: str, *, content_format: FetchContentFormat) -> str:
+    if content_format == "text":
+        return extract_readable_text(html)
+    return html
+
+
+def extract_readable_text(html: str) -> str:
+    soup = BeautifulSoup(html, "html.parser")
+
+    for tag in soup(
+        ["script", "style", "noscript", "svg", "canvas", "iframe", "template"]
+    ):
+        tag.decompose()
+
+    root = soup.find("main") or soup.find("article") or soup.body or soup
+    for tag in root.find_all(["nav", "header", "footer", "aside", "form"]):
+        tag.decompose()
+
+    parts: list[str] = []
+
+    title = soup.title.string.strip() if soup.title and soup.title.string else ""
+    if title:
+        parts.append(f"Title: {title}")
+
+    description = ""
+    meta = soup.find("meta", attrs={"name": "description"}) or soup.find(
+        "meta", attrs={"property": "og:description"}
+    )
+    if meta is not None:
+        description = (meta.get("content") or "").strip()
+    if description:
+        parts.append(f"Description: {description}")
+
+    lines: list[str] = []
+    seen: set[str] = set()
+    for raw_line in root.get_text(separator="\n", strip=True).splitlines():
+        line = re.sub(r"\s+", " ", raw_line).strip()
+        if not line or line in seen:
+            continue
+        seen.add(line)
+        lines.append(line)
+
+    if lines:
+        parts.append("Text:\n" + "\n".join(lines))
+
+    return "\n\n".join(parts).strip()
+
+
+def truncate_content(content: str, *, limit_bytes: int) -> tuple[str, bool]:
+    encoded = content.encode("utf-8")
     if len(encoded) <= limit_bytes:
-        return html, False
+        return content, False
     truncated = encoded[:limit_bytes]
     return truncated.decode("utf-8", errors="ignore"), True
 

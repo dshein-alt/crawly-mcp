@@ -11,7 +11,14 @@ from crawly_mcp.browser import SearchContextHandle
 from crawly_mcp.constants import PROVIDER_HOMEPAGE
 from crawly_mcp.errors import ChallengeBlockedError
 from crawly_mcp.security import URLSafetyGuard  # used for URL validation only
-from crawly_mcp.service import SearchTrace, WebSearchService, truncate_html
+from crawly_mcp.service import (
+    SearchTrace,
+    WebSearchService,
+    extract_readable_text,
+    render_fetch_content,
+    resolve_fetch_max_size,
+    truncate_content,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -64,7 +71,9 @@ class FakeBrowserManager:
                 return None
 
         return SearchContextHandle(
-            context=self.context, guard=_PassthroughGuard(), first_use=False,
+            context=self.context,
+            guard=_PassthroughGuard(),
+            first_use=False,
         )
 
     async def goto(self, page: FakePage, url: str, *, timeout_ms: int) -> None:
@@ -77,7 +86,9 @@ class FakeBrowserManager:
 
 
 @pytest.mark.asyncio
-async def test_search_returns_extracted_urls_from_fixture(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_search_returns_extracted_urls_from_fixture(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     html = (FIXTURES / "duckduckgo_results.html").read_text(encoding="utf-8")
     browser = FakeBrowserManager(
         {
@@ -92,7 +103,9 @@ async def test_search_returns_extracted_urls_from_fixture(monkeypatch: pytest.Mo
     async def allow_all(self, url: str) -> None:
         del self, url
 
-    monkeypatch.setattr("crawly_mcp.service.URLSafetyGuard.validate_user_url", allow_all)
+    monkeypatch.setattr(
+        "crawly_mcp.service.URLSafetyGuard.validate_user_url", allow_all
+    )
 
     result = await service.search(context="python")
 
@@ -104,37 +117,147 @@ async def test_search_returns_extracted_urls_from_fixture(monkeypatch: pytest.Mo
 
 
 @pytest.mark.asyncio
-async def test_fetch_returns_partial_success_and_truncation(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_fetch_returns_partial_success_and_truncation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     urls = ["https://example.com/ok", "https://example.com/challenge"]
-    browser = FakeBrowserManager({url: {"title": "title", "html": "<html></html>"} for url in urls})
+    browser = FakeBrowserManager(
+        {url: {"title": "title", "html": "<html></html>"} for url in urls}
+    )
     service = WebSearchService(browser)
 
     async def allow_all(self, url: str) -> None:
         del self, url
 
-    monkeypatch.setattr("crawly_mcp.service.URLSafetyGuard.validate_user_url", allow_all)
+    monkeypatch.setattr(
+        "crawly_mcp.service.URLSafetyGuard.validate_user_url", allow_all
+    )
 
-    async def fake_resolve_fetch_content(page: FakePage, *, settle_timeout_seconds: float) -> str:
+    async def fake_resolve_fetch_content(
+        page: FakePage, *, settle_timeout_seconds: float
+    ) -> str:
         del settle_timeout_seconds
         if page.url.endswith("/challenge"):
             raise ChallengeBlockedError("page stayed on a browser challenge screen")
         return "x" * 12
 
-    monkeypatch.setattr("crawly_mcp.service.resolve_fetch_content", fake_resolve_fetch_content)
-    monkeypatch.setattr("crawly_mcp.service.MAX_HTML_BYTES", 10)
+    monkeypatch.setattr(
+        "crawly_mcp.service.resolve_fetch_content", fake_resolve_fetch_content
+    )
+    monkeypatch.setenv("CRAWLY_FETCH_MAX_SIZE", "10")
 
     result = await service.fetch(urls=urls)
 
     assert result.pages == {"https://example.com/ok": "x" * 10}
     assert result.errors["https://example.com/challenge"].type == "challenge_blocked"
     assert result.truncated == ["https://example.com/ok"]
+    assert result.content_format == "html"
 
 
-def test_truncate_html_marks_oversized_payloads() -> None:
-    html, truncated = truncate_html("hello world", limit_bytes=5)
+def test_truncate_content_marks_oversized_payloads() -> None:
+    content, truncated = truncate_content("hello world", limit_bytes=5)
 
-    assert html == "hello"
+    assert content == "hello"
     assert truncated is True
+
+
+def test_resolve_fetch_max_size_uses_default_when_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("CRAWLY_FETCH_MAX_SIZE", raising=False)
+
+    assert resolve_fetch_max_size() == 1024 * 1024
+
+
+def test_resolve_fetch_max_size_accepts_positive_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CRAWLY_FETCH_MAX_SIZE", "65536")
+
+    assert resolve_fetch_max_size() == 65536
+
+
+def test_resolve_fetch_max_size_rejects_invalid_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CRAWLY_FETCH_MAX_SIZE", "not-a-number")
+
+    assert resolve_fetch_max_size() == 1024 * 1024
+
+
+def test_extract_readable_text_drops_boilerplate_and_scripts() -> None:
+    html = """
+    <html>
+      <head>
+        <title>Example title</title>
+        <meta name="description" content="Short summary">
+        <script>console.log("ignore me")</script>
+      </head>
+      <body>
+        <header>Site navigation</header>
+        <main>
+          <h1>Article heading</h1>
+          <p>Hello <strong>world</strong>.</p>
+          <p>Hello world.</p>
+        </main>
+        <footer>Footer links</footer>
+      </body>
+    </html>
+    """
+
+    text = extract_readable_text(html)
+
+    assert "Title: Example title" in text
+    assert "Description: Short summary" in text
+    assert "Article heading" in text
+    assert "Hello" in text
+    assert "Site navigation" not in text
+    assert "ignore me" not in text
+
+
+def test_render_fetch_content_returns_text_when_requested() -> None:
+    rendered = render_fetch_content(
+        "<html><body><main><p>Readable body</p></main></body></html>",
+        content_format="text",
+    )
+
+    assert "Readable body" in rendered
+
+
+@pytest.mark.asyncio
+async def test_fetch_returns_text_content_when_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    url = "https://example.com/ok"
+    browser = FakeBrowserManager({url: {"title": "title", "html": "<html></html>"}})
+    service = WebSearchService(browser)
+
+    async def allow_all(self, url: str) -> None:
+        del self, url
+
+    monkeypatch.setattr(
+        "crawly_mcp.service.URLSafetyGuard.validate_user_url", allow_all
+    )
+    monkeypatch.setenv("CRAWLY_FETCH_MAX_SIZE", "1024")
+
+    async def fake_resolve_fetch_content(
+        page: FakePage, *, settle_timeout_seconds: float
+    ) -> str:
+        del page, settle_timeout_seconds
+        return (
+            "<html><head><title>Readable page</title></head>"
+            "<body><main><p>Hello compact world.</p></main></body></html>"
+        )
+
+    monkeypatch.setattr(
+        "crawly_mcp.service.resolve_fetch_content", fake_resolve_fetch_content
+    )
+
+    result = await service.fetch(urls=[url], content_format="text")
+
+    assert result.content_format == "text"
+    assert "Hello compact world." in result.pages[url]
+    assert "<html>" not in result.pages[url]
 
 
 def test_search_trace_disabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -148,10 +271,14 @@ class _FakePage:
         self.url = "https://duckduckgo.com/html/?q=test"
         self.closed = False
 
-    async def title(self) -> str: return "results"
+    async def title(self) -> str:
+        return "results"
+
     async def content(self) -> str:
         return '<html><a class="result__a" href="https://example.com/1">r1</a></html>'
-    async def close(self) -> None: self.closed = True
+
+    async def close(self) -> None:
+        self.closed = True
 
 
 class _FakeContext:
@@ -164,7 +291,8 @@ class _FakeContext:
 
 
 class _FakeGuard:
-    def pop_blocked_error(self, page: object) -> None: return None
+    def pop_blocked_error(self, page: object) -> None:
+        return None
 
 
 class _FakeBrowserManager:
@@ -176,7 +304,9 @@ class _FakeBrowserManager:
         first = not self._first_call_done
         self._first_call_done = True
         return SearchContextHandle(
-            context=_FakeContext(), guard=_FakeGuard(), first_use=first,
+            context=_FakeContext(),
+            guard=_FakeGuard(),
+            first_use=first,
         )
 
     async def goto(self, page: object, url: str, *, timeout_ms: int) -> None:
@@ -184,9 +314,13 @@ class _FakeBrowserManager:
 
 
 @pytest.mark.asyncio
-async def test_search_warms_up_on_first_use_only(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_search_warms_up_on_first_use_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # URLSafetyGuard hits DNS on validate_user_url; short-circuit that:
-    async def fake_validate(self, url: str) -> None: return None
+    async def fake_validate(self, url: str) -> None:
+        return None
+
     monkeypatch.setattr(URLSafetyGuard, "validate_user_url", fake_validate)
     monkeypatch.setenv("CRAWLY_SEARCH_JITTER_MS", "0,0")  # deterministic test
 
@@ -203,10 +337,15 @@ async def test_search_warms_up_on_first_use_only(monkeypatch: pytest.MonkeyPatch
 
 
 @pytest.mark.asyncio
-async def test_search_closes_context_when_handle_requests(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_search_closes_context_when_handle_requests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """When the handle's should_close_context=True (ephemeral mode), the
     service must close the BrowserContext after the request."""
-    async def fake_validate(self, url: str) -> None: return None
+
+    async def fake_validate(self, url: str) -> None:
+        return None
+
     monkeypatch.setattr(URLSafetyGuard, "validate_user_url", fake_validate)
     monkeypatch.setenv("CRAWLY_SEARCH_JITTER_MS", "0,0")
 
@@ -232,9 +371,14 @@ async def test_search_closes_context_when_handle_requests(monkeypatch: pytest.Mo
 
 
 @pytest.mark.asyncio
-async def test_search_continues_when_warmup_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_search_continues_when_warmup_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Warm-up failures are best-effort and must not fail the search."""
-    async def fake_validate(self, url: str) -> None: return None
+
+    async def fake_validate(self, url: str) -> None:
+        return None
+
     monkeypatch.setattr(URLSafetyGuard, "validate_user_url", fake_validate)
     monkeypatch.setenv("CRAWLY_SEARCH_JITTER_MS", "0,0")
 

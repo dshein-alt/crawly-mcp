@@ -1,7 +1,11 @@
+import asyncio
+
 from pydantic import ValidationError
 
 from crawly_mcp.constants import ALLOWED_PROVIDERS
+from crawly_mcp.mcp_server import create_server
 from crawly_mcp.models import FetchRequest, SearchRequest
+from crawly_mcp.version import get_package_version
 
 
 def test_search_request_schema_advertises_provider_enum() -> None:
@@ -48,3 +52,35 @@ def test_fetch_request_rejects_more_than_five_urls() -> None:
         assert "at most 5 URLs" in str(exc)
     else:
         raise AssertionError("expected ValidationError")
+
+
+def test_fetch_request_schema_advertises_content_format_enum() -> None:
+    schema = FetchRequest.model_json_schema()
+    format_schema = schema["properties"]["content_format"]
+
+    assert format_schema["default"] == "html"
+    assert set(format_schema["enum"]) == {"html", "text"}
+
+
+def test_fetch_tool_schema_advertises_content_format_enum() -> None:
+    async def _run() -> dict:
+        server = create_server()
+        tools = await server.list_tools()
+        for tool in tools:
+            if tool.name == "fetch":
+                return tool.inputSchema
+        raise AssertionError("fetch tool missing from list_tools()")
+
+    schema = asyncio.run(_run())
+    format_schema = schema["properties"]["content_format"]
+
+    assert format_schema["default"] == "html"
+    assert set(format_schema["enum"]) == {"html", "text"}
+
+
+def test_create_server_reports_package_version() -> None:
+    server = create_server()
+    init_options = server._mcp_server.create_initialization_options()
+
+    assert init_options.server_name == "crawly"
+    assert init_options.server_version == get_package_version()
