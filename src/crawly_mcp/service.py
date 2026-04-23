@@ -89,7 +89,7 @@ class WebSearchService:
                     except PlaywrightTimeoutError as exc:
                         raise TimeoutExceededError("search timed out before the results page loaded") from exc
                     except PlaywrightError as exc:
-                        blocked = guard.pop_blocked_error()
+                        blocked = guard.pop_blocked_error(page)
                         if blocked is not None:
                             raise blocked from exc
                         raise NavigationFailedError(f"search navigation failed: {exc}") from exc
@@ -225,7 +225,7 @@ class WebSearchService:
                     error=FetchError(type="timeout", message="page load timed out"),
                 )
             except PlaywrightError as exc:
-                blocked = guard.pop_blocked_error()
+                blocked = guard.pop_blocked_error(page)
                 if blocked is not None:
                     return FetchOutcome(
                         url=url,

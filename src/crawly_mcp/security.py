@@ -8,7 +8,7 @@ from typing import TypeAlias
 from urllib.parse import urlsplit
 
 from loguru import logger
-from playwright.async_api import BrowserContext, Route
+from patchright.async_api import BrowserContext, Page, Route
 
 from crawly_mcp.errors import URLSafetyError
 
@@ -28,7 +28,7 @@ class URLSafetyGuard:
     def __init__(self) -> None:
         self._resolve_cache: dict[str, tuple[IPAddress, ...]] = {}
         self._cache_lock = asyncio.Lock()
-        self._blocked_requests: list[BlockedRequest] = []
+        self._blocked_requests: dict[Page, list[BlockedRequest]] = {}
 
     async def attach(self, context: BrowserContext) -> None:
         await context.route("**/*", self.handle_route)
@@ -43,20 +43,32 @@ class URLSafetyGuard:
         except URLSafetyError as exc:
             logger.warning(
                 "ssrf reject url={!r} reason={} message={}",
-                request_url,
-                exc.error_type,
-                exc.message,
+                request_url, exc.error_type, exc.message,
             )
-            self._blocked_requests.append(BlockedRequest(url=request_url, error=exc))
+            page = route.request.frame.page
+            bucket = self._blocked_requests.get(page)
+            if bucket is None:
+                bucket = []
+                self._blocked_requests[page] = bucket
+                # Subscribe once per page so the dict entry is released when
+                # the page closes, even if the caller never inspected errors.
+                page.on("close", lambda p=page: self._blocked_requests.pop(p, None))
+            bucket.append(BlockedRequest(url=request_url, error=exc))
             await route.abort("blockedbyclient")
             return
-
         await route.continue_()
 
-    def pop_blocked_error(self) -> URLSafetyError | None:
-        if not self._blocked_requests:
+    def pop_blocked_error(self, page: Page) -> URLSafetyError | None:
+        bucket = self._blocked_requests.get(page)
+        if not bucket:
             return None
-        return self._blocked_requests.pop(0).error
+        error = bucket.pop(0).error
+        if not bucket:
+            # The `close` handler will also release the dict entry eventually.
+            # Dropping it here too is safe because `pop_blocked_error` is
+            # idempotent — a subsequent call returns None.
+            del self._blocked_requests[page]
+        return error
 
     async def _validate(self, url: str, *, allow_local_schemes: bool) -> None:
         parsed = urlsplit(url)
