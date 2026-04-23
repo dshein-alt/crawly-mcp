@@ -84,9 +84,10 @@ rg -n "\\bcrawly\\b" src tests pyproject.toml  # should list only the MCP server
 
 ## Changelog
 
-[CHANGELOG.md](CHANGELOG.md) follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) with `Added` / `Changed` / `Fixed` sections under `[Unreleased]`.
+[CHANGELOG.md](CHANGELOG.md) follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) with `Added` / `Changed` / `Fixed` sections under the current version heading.
 
-- Update `[Unreleased]` as part of the same change that introduces the behavior; don't batch after the fact.
+- Use the version from `pyproject.toml` (`[project].version`) as the section heading (e.g. `## [0.1.0]`); bump the version there first if the change warrants a new release.
+- Update that section as part of the same change that introduces the behavior; don't batch after the fact.
 - Record only user-visible behavior, public interfaces, tooling, and dependencies.
 - One line per entry, imperative mood, no module paths.
 - Match the existing terse style.

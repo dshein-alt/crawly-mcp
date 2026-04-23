@@ -14,7 +14,7 @@ The design history is tracked in [docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATI
 ## Tools
 
 - `search(provider, context)` runs a browser-backed search on `duckduckgo` (default), `google`, or `yandex` and returns up to 5 organic result URLs.
-- `fetch(urls)` fetches `1..5` URLs and returns browser-rendered HTML with per-URL `pages`, `errors`, and `truncated` fields.
+- `fetch(urls, content_format)` fetches `1..5` URLs and returns browser-rendered page content with per-URL `pages`, `errors`, and `truncated` fields. Use `content_format="html"` for raw HTML or `content_format="text"` for extracted readable text.
 
 `context` is intentionally the search query string for caller compatibility.
 
@@ -65,7 +65,7 @@ The MCP server also reads:
 
 ## Container
 
-The container image uses Playwright-managed Chromium and defaults to HTTP MCP on port `8000`.
+The container image uses Patchright-managed Chromium on a plain Python Debian base and defaults to HTTP MCP on port `8000`.
 
 Build locally:
 
@@ -102,8 +102,15 @@ The container defaults to:
 - `PLAYWRIGHT_BROWSER_SOURCE=bundled`
 - `CRAWLY_HOST=0.0.0.0`
 - `CRAWLY_PORT=8000`
+- `CRAWLY_FETCH_MAX_SIZE=1048576`
 - `CRAWLY_PROFILE_DIR=/data/profiles`
 - `CRAWLY_PROFILE_CLEANUP_ON_START=true`
+
+For local LLMs with smaller context windows, call `fetch(..., content_format="text")` and lower the payload cap:
+
+```sh
+CRAWLY_FETCH_MAX_SIZE=16384 ./scripts/run_crawly_mcp_stdio_container.sh
+```
 
 The HTTP MCP endpoint is unauthenticated in v1. Deploy it behind localhost, a private network, or an auth/TLS reverse proxy.
 
@@ -114,7 +121,30 @@ Published images are intended to be:
 
 The first GHCR publish may need a one-time manual visibility change to make the package public.
 
-## MCP Client Config
+## Integration Setup
+
+### Docker Run
+
+Run the published GHCR image directly:
+
+```sh
+docker run --rm --init \
+  -p 8000:8000 \
+  -e CRAWLY_HOST=0.0.0.0 \
+  -e CRAWLY_PORT=8000 \
+  -e CRAWLY_FETCH_MAX_SIZE=16384 \
+  -e CRAWLY_BROWSER_LANG=en-US \
+  -e CRAWLY_BROWSER_LOCATION=America/New_York \
+  ghcr.io/dshein-alt/crawly-mcp:latest
+```
+
+The most important runtime overrides are:
+
+- `CRAWLY_FETCH_MAX_SIZE`: caps returned fetch payload size for both `content_format="html"` and `content_format="text"`.
+- `CRAWLY_BROWSER_LANG`: sets browser locale and primary `Accept-Language`.
+- `CRAWLY_BROWSER_LOCATION`: sets browser timezone / location persona.
+
+### MCP Client Config
 
 For MCP clients that can launch a local command, point them at the project script so the
 server comes from the current checkout:
@@ -133,17 +163,26 @@ Replace `/path/to/crawly` with your checkout path. The launcher rebuilds
 with local source changes. Set `CRAWLY_MCP_SKIP_BUILD=1` if you want to skip that build
 when the local image is already current.
 
-For clients that support HTTP MCP, start the local containerized server first:
-
-```sh
-./scripts/run_crawly_mcp_http_container.sh
-```
-
-Then point the client at:
+For clients that support HTTP MCP, start a local or published `crawly-mcp` HTTP server first,
+then point the client at the running instance:
 
 ```text
 http://127.0.0.1:8000/mcp
 ```
+
+For Continue, an HTTP MCP config looks like:
+
+```yaml
+name: New MCP server
+version: 0.0.1
+schema: v1
+mcpServers:
+  - name: Crawly
+    type: streamable-http
+    url: http://127.0.0.1:8000/mcp
+```
+
+The `url` must match an actually running `crawly-mcp` HTTP instance.
 
 If your client's MCP config accepts direct URLs, the entry is typically shaped like:
 
@@ -154,7 +193,16 @@ mcpServers:
 ```
 
 Set `CRAWLY_HTTP_BIND_HOST` or `CRAWLY_HTTP_BIND_PORT` before launching if you need the
-local listener on a different interface or port.
+listener on a different interface or port.
+
+### Bundled Skill / Prompt
+
+This repo includes two reusable instruction files for small-context web workflows:
+
+- [skills/web-search/SKILL.md](skills/web-search/SKILL.md) — Codex skill guidance under the `web-search` skill name
+- [skills/continue-web-search.md](skills/continue-web-search.md) — Continue-native invokable prompt named `Web Search`
+
+Use them when a small local model must search, fetch, and synthesize across multiple pages without overflowing context.
 
 ## Browser configuration
 
@@ -165,6 +213,7 @@ crawly uses [patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright) (a 
 | `CRAWLY_BROWSER_LANG` | `ru-RU` | Browser `locale` and primary `Accept-Language` value passed to Playwright. |
 | `CRAWLY_BROWSER_LOCATION` | `Europe/Moscow` | Browser timezone id. `TZ` is used only as a fallback when this env var is unset. |
 | `CRAWLY_BROWSER_VIEWPORT` | `1366x768` | Browser viewport in `WIDTHxHEIGHT` form. Invalid values fall back to the default. |
+| `CRAWLY_FETCH_MAX_SIZE` | `1048576` | Max bytes returned per fetched URL after rendering the configured content format. This limit applies to both raw HTML and extracted text. Lower it for local LLMs with small context windows. |
 | `CRAWLY_USE_PERSISTENT_PROFILES` | `true` | Toggle per-provider persistent search profiles. Set to `false` to make `search()` use a fresh incognito context per request (warm-up still runs). Useful for A/B-testing the persistence feature or for stateless deployments. |
 | `CRAWLY_PROFILE_DIR` | `~/.cache/crawly/profiles` | Parent directory for per-provider persistent profiles. **Must be a writable mount in containers.** Ignored when `CRAWLY_USE_PERSISTENT_PROFILES=false`. |
 | `CRAWLY_PROFILE_CLEANUP_ON_START` | `false` | Enable age-based profile cleanup at startup. Set to `true` in the Dockerfile entrypoint. **Unsafe when multiple processes share the profile dir.** |
@@ -214,7 +263,8 @@ Each traced `search()` call writes one directory containing:
 - Timeouts: `15s` per page, `20s` total for `search`, `35s` total for `fetch`.
 - SSRF guard: `http/https` only, no embedded credentials, blocks loopback/private/link-local/reserved IPs before navigation and on browser subrequests.
 - JavaScript challenge pages get a bounded `10s` settle window. `patchright` provides fingerprint patches against common bot-detection checks; provider-specific warm-up hops and synthetic client-hint headers keep the browser identity stable across requests. No CAPTCHA solving or site-specific bypass logic.
-- HTML is capped at `1 MiB` per URL; oversized responses are truncated and reported in `truncated`.
+- `fetch()` returns raw HTML by default, or extracted readable text when the request sets `content_format="text"`.
+- Returned fetch content is capped at `1 MiB` per URL by default; set `CRAWLY_FETCH_MAX_SIZE` lower when you need smaller MCP payloads. This applies to both `content_format="html"` and `content_format="text"`. Oversized responses are truncated and reported in `truncated`.
 - `robots.txt` is not consulted in v1.
 
 ## Development
