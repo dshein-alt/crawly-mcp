@@ -1,5 +1,6 @@
 import asyncio
 import os
+import time
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 from types import SimpleNamespace
@@ -265,3 +266,41 @@ async def test_search_context_returns_handle_and_tracks_first_use(
     assert h2.first_use is False
     assert h2.context is h1.context  # same cached instance
     assert len(created_dirs) == 1  # not recreated
+
+
+@pytest.mark.asyncio
+async def test_profile_cleanup_disabled_by_default(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("CRAWLY_PROFILE_DIR", str(tmp_path))
+    monkeypatch.delenv("CRAWLY_PROFILE_CLEANUP_ON_START", raising=False)
+
+    old = tmp_path / "stale"
+    old.mkdir()
+    os.utime(old, (time.time() - 60 * 24 * 3600, time.time() - 60 * 24 * 3600))
+
+    manager = BrowserManager()
+    await manager._cleanup_stale_profiles()  # direct call under test
+    assert old.exists()  # NOT deleted, cleanup gate off
+
+
+@pytest.mark.asyncio
+async def test_profile_cleanup_when_enabled_deletes_old_dirs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("CRAWLY_PROFILE_DIR", str(tmp_path))
+    monkeypatch.setenv("CRAWLY_PROFILE_CLEANUP_ON_START", "true")
+    monkeypatch.setenv("CRAWLY_PROFILE_MAX_AGE_DAYS", "14")
+
+    old = tmp_path / "ddg-stale"
+    old.mkdir()
+    (old / "file").write_text("data")
+    os.utime(old, (time.time() - 30 * 24 * 3600, time.time() - 30 * 24 * 3600))
+
+    fresh = tmp_path / "ddg-fresh"
+    fresh.mkdir()
+
+    manager = BrowserManager()
+    await manager._cleanup_stale_profiles()
+    assert not old.exists()
+    assert fresh.exists()

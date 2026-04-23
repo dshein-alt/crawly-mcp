@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+import time
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,9 +22,12 @@ from patchright.async_api import (
 from crawly_mcp.constants import (
     ALLOWED_BROWSER_SOURCES,
     BROWSER_SOURCE_SYSTEM,
+    CRAWLY_PROFILE_CLEANUP_ON_START_ENV_VAR,
     CRAWLY_PROFILE_DIR_ENV_VAR,
+    CRAWLY_PROFILE_MAX_AGE_DAYS_ENV_VAR,
     CRAWLY_USE_XVFB_ENV_VAR,
     DEFAULT_PROFILE_DIR,
+    DEFAULT_PROFILE_MAX_AGE_DAYS,
     DEFAULT_TIMEZONE_ID,
     MAX_CONCURRENT_NAVIGATIONS,
     PLAYWRIGHT_BROWSER_SOURCE_ENV_VAR,
@@ -52,6 +56,7 @@ class BrowserManager:
         self._search_guards: dict[str, URLSafetyGuard] = {}
 
     async def start(self) -> None:
+        await self._cleanup_stale_profiles()
         await self._ensure_browser()
 
     async def new_context(self) -> BrowserContext:
@@ -103,6 +108,38 @@ class BrowserManager:
             self._search_contexts[provider] = ctx
             self._search_guards[provider] = guard
             return SearchContextHandle(context=ctx, guard=guard, first_use=True)
+
+    async def _cleanup_stale_profiles(self) -> None:
+        if os.environ.get(CRAWLY_PROFILE_CLEANUP_ON_START_ENV_VAR, "").lower() not in ("1", "true", "yes"):
+            return
+
+        profile_parent = Path(
+            os.environ.get(CRAWLY_PROFILE_DIR_ENV_VAR, DEFAULT_PROFILE_DIR)
+        ).expanduser()
+        if not profile_parent.is_dir():
+            return
+
+        max_age_days = int(
+            os.environ.get(CRAWLY_PROFILE_MAX_AGE_DAYS_ENV_VAR, str(DEFAULT_PROFILE_MAX_AGE_DAYS))
+        )
+        threshold = time.time() - max_age_days * 24 * 3600
+
+        deleted = 0
+        reclaimed = 0
+        for entry in profile_parent.iterdir():
+            if not entry.is_dir():
+                continue
+            try:
+                if entry.stat().st_mtime >= threshold:
+                    continue
+                size = sum(p.stat().st_size for p in entry.rglob("*") if p.is_file())
+                shutil.rmtree(entry)
+                deleted += 1
+                reclaimed += size
+            except OSError as exc:
+                logger.warning("profile cleanup failed entry={} error={}", entry, exc)
+        if deleted:
+            logger.info("profile cleanup deleted={} reclaimed_bytes={}", deleted, reclaimed)
 
     async def _ensure_playwright_started(self) -> None:
         if self._playwright is None:
