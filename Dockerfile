@@ -36,7 +36,7 @@ RUN chmod +x /usr/local/bin/run-with-xvfb.sh
 RUN mkdir -p /data/profiles && chown -R pwuser:pwuser /data/profiles
 
 USER pwuser
-RUN uv run patchright install chromium
+RUN /app/.venv/bin/patchright install chromium
 
 EXPOSE 8000
 ENTRYPOINT ["/usr/local/bin/run-with-xvfb.sh"]
