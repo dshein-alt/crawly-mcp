@@ -1,12 +1,16 @@
 import asyncio
 import os
+from dataclasses import FrozenInstanceError
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import patchright.async_api as playwright_api
 import pytest
 
 from crawly_mcp.browser import (
     BrowserManager,
+    SearchContextHandle,
     resolve_browser_source,
     resolve_chromium_executable,
 )
@@ -201,3 +205,63 @@ def test_context_options_defaults_timezone_when_unset(monkeypatch: pytest.Monkey
     manager = BrowserManager()
     opts = manager._context_options()
     assert opts["timezone_id"] == "America/New_York"
+
+
+def test_search_context_handle_is_frozen_dataclass() -> None:
+    # Use real sentinels — just type-shape check
+    ctx = object()
+    guard = object()
+    handle = SearchContextHandle(context=ctx, guard=guard, first_use=True)
+    assert handle.context is ctx
+    assert handle.guard is guard
+    assert handle.first_use is True
+    with pytest.raises(FrozenInstanceError):
+        handle.first_use = False  # type: ignore[misc]
+
+
+class _AsyncNoop:
+    async def __call__(self, *args: Any, **kwargs: Any) -> None: ...
+
+
+@pytest.mark.asyncio
+async def test_search_context_returns_handle_and_tracks_first_use(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """First call: first_use=True. Second call for same provider: first_use=False."""
+    monkeypatch.setenv("CRAWLY_PROFILE_DIR", str(tmp_path))
+    monkeypatch.setenv("CRAWLY_PROFILE_CLEANUP_ON_START", "false")
+
+    created_dirs: list[str] = []
+
+    class FakeChromium:
+        async def launch(self, **kwargs: Any) -> Any:
+            return object()  # unused in this test
+
+        async def launch_persistent_context(self, user_data_dir: str, **kwargs: Any) -> Any:
+            created_dirs.append(user_data_dir)
+            # _AsyncNoop is an async-callable assigned where patchright
+            # expects a method; `await ctx.route(...)` invokes __call__.
+            return SimpleNamespace(
+                route=_AsyncNoop(),
+                close=_AsyncNoop(),
+                on=lambda *_a, **_k: None,
+                is_closed=lambda: False,
+            )
+
+    class FakePlaywright:
+        chromium = FakeChromium()
+        async def stop(self) -> None: ...
+
+    async def fake_async_playwright() -> FakePlaywright:
+        return FakePlaywright()
+
+    monkeypatch.setattr(playwright_api, "async_playwright", lambda: SimpleNamespace(start=fake_async_playwright))
+
+    manager = BrowserManager()
+    h1 = await manager.search_context("duckduckgo")
+    assert h1.first_use is True
+
+    h2 = await manager.search_context("duckduckgo")
+    assert h2.first_use is False
+    assert h2.context is h1.context  # same cached instance
+    assert len(created_dirs) == 1  # not recreated
