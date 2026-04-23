@@ -17,7 +17,7 @@ PROVIDER_HOST_SUFFIXES = {
 SEARCH_URL_TEMPLATES = {
     "duckduckgo": "https://duckduckgo.com/?q={query}&ia=web",
     "google": "https://www.google.com/search?q={query}&hl=en",
-    "yandex": "https://yandex.com/search/?text={query}",
+    "yandex": "https://yandex.ru/search/?text={query}",
 }
 
 RESULT_SELECTORS = {

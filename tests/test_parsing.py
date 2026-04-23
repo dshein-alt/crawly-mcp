@@ -52,7 +52,7 @@ def test_yandex_fixture_extracts_links() -> None:
     urls = extract_search_results(
         "yandex",
         _fixture("yandex_results.html"),
-        "https://yandex.com/search/?text=python",
+        "https://yandex.ru/search/?text=python",
     )
 
     assert urls == [
