@@ -2,7 +2,7 @@
 
 ## Project
 
-`crawly` exposes two browser-backed operations — `search` and `fetch` — as MCP tools and a CLI for local LLM workflows. The implementation is Playwright-first, async, and supports either a host Chromium binary or a Playwright-managed Chromium bundle depending on runtime configuration.
+`crawly` exposes two browser-backed operations — `search` and `fetch` — as MCP tools and a CLI for local LLM workflows. The implementation is built on `patchright` (a Playwright fork with bundled fingerprint patches), is async, and supports either a host Chromium binary or a patchright-managed Chromium bundle depending on runtime configuration.
 
 The authoritative design document is [docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md). The user-facing overview is in [README.md](README.md).
 
