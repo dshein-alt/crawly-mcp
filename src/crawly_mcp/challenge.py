@@ -56,7 +56,9 @@ async def snapshot_page(page: PageLike) -> PageSnapshot:
     return PageSnapshot(url=page.url, title=title, html=html)
 
 
-async def resolve_fetch_content(page: PageLike, *, settle_timeout_seconds: float) -> str:
+async def resolve_fetch_content(
+    page: PageLike, *, settle_timeout_seconds: float
+) -> str:
     await asyncio.sleep(0.35)
     snapshot = await snapshot_page(page)
     if not looks_like_challenge(snapshot.url, snapshot.title, snapshot.html):

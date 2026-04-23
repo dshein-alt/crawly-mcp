@@ -12,14 +12,24 @@ from crawly_mcp.service import WebSearchService
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Browser-backed external web search CLI.")
+    parser = argparse.ArgumentParser(
+        description="Browser-backed external web search CLI."
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    search_parser = subparsers.add_parser("search", help="Run a search query and print result URLs as JSON.")
-    search_parser.add_argument("--provider", default=None, help="Search provider: duckduckgo, google, or yandex.")
+    search_parser = subparsers.add_parser(
+        "search", help="Run a search query and print result URLs as JSON."
+    )
+    search_parser.add_argument(
+        "--provider",
+        default=None,
+        help="Search provider: duckduckgo, google, or yandex.",
+    )
     search_parser.add_argument("--context", required=True, help="Search query text.")
 
-    fetch_parser = subparsers.add_parser("fetch", help="Fetch URLs and print rendered HTML as JSON.")
+    fetch_parser = subparsers.add_parser(
+        "fetch", help="Fetch URLs and print rendered HTML as JSON."
+    )
     fetch_parser.add_argument("urls", nargs="+", help="Up to 5 URLs to fetch.")
 
     return parser

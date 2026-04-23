@@ -82,9 +82,14 @@ def test_normalize_result_url_handles_known_redirect_wrappers() -> None:
 
 
 def test_is_search_blocked_detects_challenge_copy() -> None:
-    html = "<html><body>Detected unusual traffic from your computer network.</body></html>"
+    html = (
+        "<html><body>Detected unusual traffic from your computer network.</body></html>"
+    )
 
-    assert is_search_blocked("google", "https://www.google.com/sorry/index", "Sorry", html) is True
+    assert (
+        is_search_blocked("google", "https://www.google.com/sorry/index", "Sorry", html)
+        is True
+    )
 
 
 def test_is_search_blocked_detects_duckduckgo_static_pages_redirect() -> None:

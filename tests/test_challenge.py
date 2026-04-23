@@ -24,14 +24,20 @@ class FakeChallengePage:
 
 
 @pytest.mark.asyncio
-async def test_resolve_fetch_content_waits_for_challenge_to_clear(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_resolve_fetch_content_waits_for_challenge_to_clear(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     async def no_sleep(_: float) -> None:
         return None
 
     monkeypatch.setattr("crawly_mcp.challenge.asyncio.sleep", no_sleep)
     page = FakeChallengePage(
         [
-            ("https://example.com/challenge", "Just a moment", "<html>Checking your browser</html>"),
+            (
+                "https://example.com/challenge",
+                "Just a moment",
+                "<html>Checking your browser</html>",
+            ),
             ("https://example.com/final", "Example", "<html><body>Ready</body></html>"),
         ]
     )
@@ -42,13 +48,21 @@ async def test_resolve_fetch_content_waits_for_challenge_to_clear(monkeypatch: p
 
 
 @pytest.mark.asyncio
-async def test_resolve_fetch_content_reports_blocked_challenge(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_resolve_fetch_content_reports_blocked_challenge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     async def no_sleep(_: float) -> None:
         return None
 
     monkeypatch.setattr("crawly_mcp.challenge.asyncio.sleep", no_sleep)
     page = FakeChallengePage(
-        [("https://example.com/challenge", "Just a moment", "<html>Checking your browser</html>")]
+        [
+            (
+                "https://example.com/challenge",
+                "Just a moment",
+                "<html>Checking your browser</html>",
+            )
+        ]
     )
 
     with pytest.raises(ChallengeBlockedError, match="challenge screen"):

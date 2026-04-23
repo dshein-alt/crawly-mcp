@@ -42,7 +42,12 @@ SEARCH_BLOCK_MARKERS = {
         "verify",
         "static-pages",  # bot-detection redirect target, e.g. /static-pages/418.html
     ),
-    "google": ("before you continue", "detected unusual traffic", "sorry", "unusual traffic"),
+    "google": (
+        "before you continue",
+        "detected unusual traffic",
+        "sorry",
+        "unusual traffic",
+    ),
     "yandex": ("robot", "captcha", "проверка", "unusual"),
 }
 
@@ -133,7 +138,10 @@ def _is_internal_provider_url(provider: str, hostname: str | None) -> bool:
     if hostname is None:
         return True
     host = hostname.lower()
-    return any(host == suffix or host.endswith(f".{suffix}") for suffix in PROVIDER_HOST_SUFFIXES[provider])
+    return any(
+        host == suffix or host.endswith(f".{suffix}")
+        for suffix in PROVIDER_HOST_SUFFIXES[provider]
+    )
 
 
 def _first(values: Iterable[str] | None) -> str | None:

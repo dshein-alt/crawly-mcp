@@ -23,7 +23,9 @@ async def test_validate_user_url_rejects_embedded_credentials() -> None:
 
 
 @pytest.mark.asyncio
-async def test_validate_user_url_rejects_private_dns_result(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_validate_user_url_rejects_private_dns_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     guard = URLSafetyGuard()
 
     async def fake_resolve(host: str, port: int | None):
@@ -36,7 +38,9 @@ async def test_validate_user_url_rejects_private_dns_result(monkeypatch: pytest.
 
 
 @pytest.mark.asyncio
-async def test_validate_user_url_allows_public_dns_result(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_validate_user_url_allows_public_dns_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     guard = URLSafetyGuard()
 
     async def fake_resolve(host: str, port: int | None):
@@ -60,8 +64,12 @@ def test_pop_blocked_error_returns_page_scoped_error() -> None:
     err_b = URLSafetyError("blocked_target", "B")
 
     # Simulate what handle_route() would do internally:
-    guard._blocked_requests.setdefault(page_a, []).append(BlockedRequest(url="https://a/", error=err_a))
-    guard._blocked_requests.setdefault(page_b, []).append(BlockedRequest(url="https://b/", error=err_b))
+    guard._blocked_requests.setdefault(page_a, []).append(
+        BlockedRequest(url="https://a/", error=err_a)
+    )
+    guard._blocked_requests.setdefault(page_b, []).append(
+        BlockedRequest(url="https://b/", error=err_b)
+    )
 
     assert guard.pop_blocked_error(page_a) is err_a
     assert guard.pop_blocked_error(page_b) is err_b
@@ -93,7 +101,11 @@ def test_close_event_cleans_up_dict_entry() -> None:
     bucket: list[BlockedRequest] = []
     guard._blocked_requests[page] = bucket
     page.on("close", lambda p=page: guard._blocked_requests.pop(p, None))
-    bucket.append(BlockedRequest(url="https://blocked/", error=URLSafetyError("blocked_target", "x")))
+    bucket.append(
+        BlockedRequest(
+            url="https://blocked/", error=URLSafetyError("blocked_target", "x")
+        )
+    )
 
     assert page in guard._blocked_requests
     # Fire the close handler without anyone calling pop_blocked_error:

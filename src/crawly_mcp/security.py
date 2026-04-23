@@ -43,7 +43,9 @@ class URLSafetyGuard:
         except URLSafetyError as exc:
             logger.warning(
                 "ssrf reject url={!r} reason={} message={}",
-                request_url, exc.error_type, exc.message,
+                request_url,
+                exc.error_type,
+                exc.message,
             )
             page = route.request.frame.page
             bucket = self._blocked_requests.get(page)
@@ -77,9 +79,13 @@ class URLSafetyGuard:
         if scheme in SAFE_LOCAL_SCHEMES and allow_local_schemes:
             return
         if scheme not in SAFE_NETWORK_SCHEMES:
-            raise URLSafetyError("invalid_url", f"unsupported URL scheme: {scheme or '<missing>'}")
+            raise URLSafetyError(
+                "invalid_url", f"unsupported URL scheme: {scheme or '<missing>'}"
+            )
         if parsed.username or parsed.password:
-            raise URLSafetyError("invalid_url", "URLs with embedded credentials are not allowed")
+            raise URLSafetyError(
+                "invalid_url", "URLs with embedded credentials are not allowed"
+            )
         if not parsed.hostname:
             raise URLSafetyError("invalid_url", "URL must include a hostname")
 
@@ -97,7 +103,9 @@ class URLSafetyGuard:
         blocked = [str(address) for address in addresses if not address.is_global]
         if blocked:
             joined = ", ".join(blocked)
-            raise URLSafetyError("blocked_target", f"URL resolves to non-public address(es): {joined}")
+            raise URLSafetyError(
+                "blocked_target", f"URL resolves to non-public address(es): {joined}"
+            )
 
     async def _resolve_host(
         self,
@@ -118,7 +126,9 @@ class URLSafetyGuard:
                 socket.SOCK_STREAM,
             )
         except socket.gaierror as exc:
-            raise URLSafetyError("invalid_url", f"failed to resolve hostname {host!r}") from exc
+            raise URLSafetyError(
+                "invalid_url", f"failed to resolve hostname {host!r}"
+            ) from exc
 
         addresses: list[IPAddress] = []
         for family, _, _, _, sockaddr in info:
@@ -130,7 +140,10 @@ class URLSafetyGuard:
                 addresses.append(address)
 
         if not addresses:
-            raise URLSafetyError("invalid_url", f"hostname {host!r} did not resolve to a usable IP address")
+            raise URLSafetyError(
+                "invalid_url",
+                f"hostname {host!r} did not resolve to a usable IP address",
+            )
 
         result = tuple(addresses)
         async with self._cache_lock:

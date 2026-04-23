@@ -4,6 +4,7 @@
 Exits 0 if the browser's JS-visible fingerprint looks like a real Chrome;
 non-zero on the first failing check.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -22,11 +23,22 @@ class Check:
 
 
 CHECKS: list[Check] = [
-    Check("navigator.webdriver", "navigator.webdriver", "navigator.webdriver === false"),
-    Check("navigator.plugins.length", "navigator.plugins.length", "navigator.plugins.length > 0"),
-    Check("navigator.languages.length", "navigator.languages.length", "navigator.languages.length > 0"),
-    Check("window.chrome", "typeof window.chrome",
-          "typeof window.chrome !== 'undefined'"),
+    Check(
+        "navigator.webdriver", "navigator.webdriver", "navigator.webdriver === false"
+    ),
+    Check(
+        "navigator.plugins.length",
+        "navigator.plugins.length",
+        "navigator.plugins.length > 0",
+    ),
+    Check(
+        "navigator.languages.length",
+        "navigator.languages.length",
+        "navigator.languages.length > 0",
+    ),
+    Check(
+        "window.chrome", "typeof window.chrome", "typeof window.chrome !== 'undefined'"
+    ),
     Check(
         "WebGL renderer",
         """(() => {

@@ -36,15 +36,27 @@ async def _run(url: str, fetch_url: str, private_url: str | None) -> None:
                 raise RuntimeError(f"missing fetched page for {fetch_url}")
 
             if private_url is not None:
-                private_result = await session.call_tool("fetch", {"urls": [private_url]})
+                private_result = await session.call_tool(
+                    "fetch", {"urls": [private_url]}
+                )
                 if not private_result.isError:
                     raise RuntimeError("expected private URL fetch to fail")
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run an HTTP MCP smoke test against crawly.")
-    parser.add_argument("--url", required=True, help="HTTP MCP endpoint URL, e.g. http://127.0.0.1:8000/mcp")
-    parser.add_argument("--fetch-url", default="https://example.com", help="Public URL to fetch successfully.")
+    parser = argparse.ArgumentParser(
+        description="Run an HTTP MCP smoke test against crawly."
+    )
+    parser.add_argument(
+        "--url",
+        required=True,
+        help="HTTP MCP endpoint URL, e.g. http://127.0.0.1:8000/mcp",
+    )
+    parser.add_argument(
+        "--fetch-url",
+        default="https://example.com",
+        help="Public URL to fetch successfully.",
+    )
     parser.add_argument(
         "--private-url",
         default=None,

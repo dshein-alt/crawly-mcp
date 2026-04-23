@@ -53,7 +53,9 @@ def configure_logging(
     the MCP SDK, and other libraries share the same format and level.
     """
 
-    resolved = (level or os.environ.get(CRAWLY_LOG_LEVEL_ENV_VAR, _DEFAULT_LEVEL)).upper()
+    resolved = (
+        level or os.environ.get(CRAWLY_LOG_LEVEL_ENV_VAR, _DEFAULT_LEVEL)
+    ).upper()
     if resolved not in _ALLOWED_LEVELS:
         allowed = ", ".join(_ALLOWED_LEVELS)
         raise ValueError(
@@ -62,7 +64,7 @@ def configure_logging(
 
     logger.remove()
     logger.add(
-        sink if sink is not None else sys.stderr, # type: ignore
+        sink if sink is not None else sys.stderr,  # type: ignore
         level=resolved,
         format=_LOG_FORMAT,
         colorize=sink is None,

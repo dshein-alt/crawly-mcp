@@ -15,7 +15,9 @@ def test_build_parser_accepts_search_command() -> None:
     assert args.context == "python"
 
 
-def test_main_prints_structured_error_for_search(capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
+def test_main_prints_structured_error_for_search(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
     async def fake_search(provider: str | None, context: str) -> int:
         del provider, context
         raise InvalidInputError("context must be a non-empty search query")

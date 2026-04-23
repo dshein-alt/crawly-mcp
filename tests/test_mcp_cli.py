@@ -16,7 +16,9 @@ def test_build_parser_allows_cli_overrides(monkeypatch) -> None:
     monkeypatch.setenv("CRAWLY_HOST", "0.0.0.0")  # noqa: S104
     monkeypatch.setenv("CRAWLY_PORT", "9000")
 
-    args = build_parser().parse_args(["--transport", "streamable-http", "--host", "127.0.0.1", "--port", "8000"])
+    args = build_parser().parse_args(
+        ["--transport", "streamable-http", "--host", "127.0.0.1", "--port", "8000"]
+    )
 
     assert args.transport == "streamable-http"
     assert args.host == "127.0.0.1"
