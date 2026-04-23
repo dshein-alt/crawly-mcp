@@ -55,13 +55,18 @@ class SearchContextHandle:
 
 
 class BrowserManager:
-    def __init__(self, *, max_concurrent_navigations: int = MAX_CONCURRENT_NAVIGATIONS) -> None:
+    def __init__(
+        self, *, max_concurrent_navigations: int = MAX_CONCURRENT_NAVIGATIONS
+    ) -> None:
         self._playwright: Playwright | None = None
         self._browser: Browser | None = None
         self._lock = asyncio.Lock()
         self._navigation_semaphore = asyncio.Semaphore(max_concurrent_navigations)
         self._search_contexts: dict[str, BrowserContext] = {}
         self._search_guards: dict[str, URLSafetyGuard] = {}
+        # patchright's BrowserContext has no is_closed() method, so we observe
+        # the "close" event and remember which contexts have closed by id().
+        self._closed_context_ids: set[int] = set()
 
     async def start(self) -> None:
         await self._cleanup_stale_profiles()
@@ -92,8 +97,10 @@ class BrowserManager:
             for provider, ctx in list(self._search_contexts.items()):
                 with suppress(Exception):
                     await ctx.close()
+                self._closed_context_ids.discard(id(ctx))
                 self._search_contexts.pop(provider, None)
                 self._search_guards.pop(provider, None)
+            self._closed_context_ids.clear()
             if self._browser is not None:
                 await self._browser.close()
                 self._browser = None
@@ -106,7 +113,7 @@ class BrowserManager:
             return await self._make_ephemeral_search_context()
         async with self._lock:
             cached = self._search_contexts.get(provider)
-            if cached is not None and not cached.is_closed():
+            if cached is not None and id(cached) not in self._closed_context_ids:
                 return SearchContextHandle(
                     context=cached,
                     guard=self._search_guards[provider],
@@ -114,6 +121,7 @@ class BrowserManager:
                 )
             if cached is not None:
                 # Stale; drop it and recreate.
+                self._closed_context_ids.discard(id(cached))
                 self._search_contexts.pop(provider, None)
                 self._search_guards.pop(provider, None)
 
@@ -132,11 +140,18 @@ class BrowserManager:
         guard = URLSafetyGuard()
         await guard.attach(ctx)
         return SearchContextHandle(
-            context=ctx, guard=guard, first_use=True, should_close_context=True,
+            context=ctx,
+            guard=guard,
+            first_use=True,
+            should_close_context=True,
         )
 
     async def _cleanup_stale_profiles(self) -> None:
-        if os.environ.get(CRAWLY_PROFILE_CLEANUP_ON_START_ENV_VAR, "").lower() not in ("1", "true", "yes"):
+        if os.environ.get(CRAWLY_PROFILE_CLEANUP_ON_START_ENV_VAR, "").lower() not in (
+            "1",
+            "true",
+            "yes",
+        ):
             return
 
         profile_parent = Path(
@@ -146,7 +161,9 @@ class BrowserManager:
             return
 
         max_age_days = int(
-            os.environ.get(CRAWLY_PROFILE_MAX_AGE_DAYS_ENV_VAR, str(DEFAULT_PROFILE_MAX_AGE_DAYS))
+            os.environ.get(
+                CRAWLY_PROFILE_MAX_AGE_DAYS_ENV_VAR, str(DEFAULT_PROFILE_MAX_AGE_DAYS)
+            )
         )
         threshold = time.time() - max_age_days * 24 * 3600
 
@@ -165,7 +182,9 @@ class BrowserManager:
             except OSError as exc:
                 logger.warning("profile cleanup failed entry={} error={}", entry, exc)
         if deleted:
-            logger.info("profile cleanup deleted={} reclaimed_bytes={}", deleted, reclaimed)
+            logger.info(
+                "profile cleanup deleted={} reclaimed_bytes={}", deleted, reclaimed
+            )
 
     async def _ensure_playwright_started(self) -> None:
         if self._playwright is None:
@@ -177,11 +196,14 @@ class BrowserManager:
         ).expanduser()
         user_data_dir = profile_parent / provider
         user_data_dir.mkdir(parents=True, exist_ok=True)
-        return await self._playwright.chromium.launch_persistent_context(
+        ctx = await self._playwright.chromium.launch_persistent_context(
             str(user_data_dir),
             **self._launch_options(),
             **self._context_options(),
         )
+        ctx_id = id(ctx)
+        ctx.on("close", lambda *_args, **_kwargs: self._closed_context_ids.add(ctx_id))
+        return ctx
 
     def _launch_options(self) -> dict[str, Any]:
         """Launch options shared by both the incognito Browser and each
@@ -218,9 +240,7 @@ class BrowserManager:
                     )
                 else:
                     hint = "failed to start bundled Playwright Chromium"
-                raise BrowserUnavailableError(
-                    hint
-                ) from exc
+                raise BrowserUnavailableError(hint) from exc
             except Exception:
                 await self._shutdown_playwright()
                 raise
@@ -268,7 +288,11 @@ def resolve_chromium_executable() -> str:
 
 
 def resolve_browser_source() -> str:
-    source = os.environ.get(PLAYWRIGHT_BROWSER_SOURCE_ENV_VAR, BROWSER_SOURCE_SYSTEM).strip().lower()
+    source = (
+        os.environ.get(PLAYWRIGHT_BROWSER_SOURCE_ENV_VAR, BROWSER_SOURCE_SYSTEM)
+        .strip()
+        .lower()
+    )
     if not source:
         return BROWSER_SOURCE_SYSTEM
     if source in ALLOWED_BROWSER_SOURCES:
@@ -304,7 +328,9 @@ def resolve_browser_location() -> str:
 
 
 def resolve_browser_viewport() -> dict[str, int]:
-    raw = os.environ.get(BROWSER_VIEWPORT_ENV_VAR, "").strip() or DEFAULT_BROWSER_VIEWPORT
+    raw = (
+        os.environ.get(BROWSER_VIEWPORT_ENV_VAR, "").strip() or DEFAULT_BROWSER_VIEWPORT
+    )
     match = re.fullmatch(r"(\d{2,5})x(\d{2,5})", raw)
     if match is None:
         width, height = (int(value) for value in DEFAULT_BROWSER_VIEWPORT.split("x", 1))

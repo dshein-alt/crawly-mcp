@@ -44,6 +44,70 @@ class FakeNavPage:
             self.tracker.current -= 1
 
 
+class _StrictFakeContext:
+    """Mirrors the real patchright surface — has `close` and `on`, but any
+    attempt to access `is_closed` raises AttributeError."""
+
+    def __init__(self) -> None:
+        self.close_handlers: list[Any] = []
+
+    async def route(self, *_a: Any, **_k: Any) -> None:
+        return None
+
+    async def close(self) -> None:
+        return None
+
+    def on(self, event: str, handler: Any) -> None:
+        if event == "close":
+            self.close_handlers.append(handler)
+
+    def fire_close(self) -> None:
+        for handler in self.close_handlers:
+            handler()
+
+    def __getattr__(self, name: str) -> Any:
+        raise AttributeError(
+            f"_StrictFakeContext intentionally has no attribute {name!r}"
+        )
+
+
+class _PersistentContextChromium:
+    def __init__(self, contexts: list[_StrictFakeContext]) -> None:
+        self._contexts = contexts
+
+    async def launch(self, **kwargs: Any) -> Any:
+        del kwargs
+        return object()
+
+    async def launch_persistent_context(self, user_data_dir: str, **kwargs: Any) -> Any:
+        del user_data_dir, kwargs
+        ctx = _StrictFakeContext()
+        self._contexts.append(ctx)
+        return ctx
+
+
+class _PersistentContextPlaywright:
+    def __init__(self, contexts: list[_StrictFakeContext]) -> None:
+        self.chromium = _PersistentContextChromium(contexts)
+
+    async def stop(self) -> None:
+        return None
+
+
+def _patch_persistent_context_playwright(
+    monkeypatch: pytest.MonkeyPatch,
+    contexts: list[_StrictFakeContext],
+) -> None:
+    async def fake_async_playwright() -> _PersistentContextPlaywright:
+        return _PersistentContextPlaywright(contexts)
+
+    monkeypatch.setattr(
+        playwright_api,
+        "async_playwright",
+        lambda: SimpleNamespace(start=fake_async_playwright),
+    )
+
+
 @pytest.mark.asyncio
 async def test_goto_respects_global_navigation_limit() -> None:
     manager = BrowserManager(max_concurrent_navigations=3)
@@ -51,7 +115,10 @@ async def test_goto_respects_global_navigation_limit() -> None:
     pages = [FakeNavPage(tracker) for _ in range(5)]
 
     await asyncio.gather(
-        *(manager.goto(page, f"https://example.com/{index}", timeout_ms=100) for index, page in enumerate(pages))
+        *(
+            manager.goto(page, f"https://example.com/{index}", timeout_ms=100)
+            for index, page in enumerate(pages)
+        )
     )
 
     assert tracker.maximum == 3
@@ -76,7 +143,9 @@ def test_resolve_chromium_executable_uses_path_lookup(
     monkeypatch.delenv("PLAYWRIGHT_CHROMIUM_EXECUTABLE", raising=False)
     monkeypatch.setattr(
         "shutil.which",
-        lambda name: "/usr/bin/chromium-browser" if name == "chromium-browser" else None,
+        lambda name: (
+            "/usr/bin/chromium-browser" if name == "chromium-browser" else None
+        ),
     )
 
     assert resolve_chromium_executable() == "/usr/bin/chromium-browser"
@@ -92,7 +161,9 @@ def test_resolve_chromium_executable_raises_when_missing(
         resolve_chromium_executable()
 
 
-def test_resolve_browser_source_defaults_to_system(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_resolve_browser_source_defaults_to_system(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.delenv("PLAYWRIGHT_BROWSER_SOURCE", raising=False)
 
     assert resolve_browser_source() == "system"
@@ -209,7 +280,9 @@ def test_context_options_reads_browser_env(monkeypatch: pytest.MonkeyPatch) -> N
     assert "sec-ch-ua" in opts["extra_http_headers"]
 
 
-def test_context_options_defaults_timezone_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_context_options_defaults_timezone_when_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.delenv("CRAWLY_BROWSER_LANG", raising=False)
     monkeypatch.delenv("CRAWLY_BROWSER_LOCATION", raising=False)
     monkeypatch.delenv("CRAWLY_BROWSER_VIEWPORT", raising=False)
@@ -231,7 +304,9 @@ def test_resolve_browser_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
     assert resolve_browser_viewport() == {"width": 1920, "height": 1080}
 
 
-def test_resolve_browser_viewport_falls_back_on_invalid_value(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_resolve_browser_viewport_falls_back_on_invalid_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("CRAWLY_BROWSER_VIEWPORT", "garbage")
     assert resolve_browser_viewport() == {"width": 1366, "height": 768}
 
@@ -260,7 +335,8 @@ class _AsyncNoop:
 
 @pytest.mark.asyncio
 async def test_search_context_returns_handle_and_tracks_first_use(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     """First call: first_use=True. Second call for same provider: first_use=False."""
     monkeypatch.setenv("CRAWLY_PROFILE_DIR", str(tmp_path))
@@ -272,7 +348,9 @@ async def test_search_context_returns_handle_and_tracks_first_use(
         async def launch(self, **kwargs: Any) -> Any:
             return object()  # unused in this test
 
-        async def launch_persistent_context(self, user_data_dir: str, **kwargs: Any) -> Any:
+        async def launch_persistent_context(
+            self, user_data_dir: str, **kwargs: Any
+        ) -> Any:
             created_dirs.append(user_data_dir)
             # _AsyncNoop is an async-callable assigned where patchright
             # expects a method; `await ctx.route(...)` invokes __call__.
@@ -280,17 +358,21 @@ async def test_search_context_returns_handle_and_tracks_first_use(
                 route=_AsyncNoop(),
                 close=_AsyncNoop(),
                 on=lambda *_a, **_k: None,
-                is_closed=lambda: False,
             )
 
     class FakePlaywright:
         chromium = FakeChromium()
+
         async def stop(self) -> None: ...
 
     async def fake_async_playwright() -> FakePlaywright:
         return FakePlaywright()
 
-    monkeypatch.setattr(playwright_api, "async_playwright", lambda: SimpleNamespace(start=fake_async_playwright))
+    monkeypatch.setattr(
+        playwright_api,
+        "async_playwright",
+        lambda: SimpleNamespace(start=fake_async_playwright),
+    )
 
     manager = BrowserManager()
     h1 = await manager.search_context("duckduckgo")
@@ -304,7 +386,8 @@ async def test_search_context_returns_handle_and_tracks_first_use(
 
 @pytest.mark.asyncio
 async def test_profile_cleanup_disabled_by_default(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     monkeypatch.setenv("CRAWLY_PROFILE_DIR", str(tmp_path))
     monkeypatch.delenv("CRAWLY_PROFILE_CLEANUP_ON_START", raising=False)
@@ -320,7 +403,8 @@ async def test_profile_cleanup_disabled_by_default(
 
 @pytest.mark.asyncio
 async def test_profile_cleanup_when_enabled_deletes_old_dirs(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     monkeypatch.setenv("CRAWLY_PROFILE_DIR", str(tmp_path))
     monkeypatch.setenv("CRAWLY_PROFILE_CLEANUP_ON_START", "true")
@@ -341,12 +425,15 @@ async def test_profile_cleanup_when_enabled_deletes_old_dirs(
 
 
 @pytest.mark.asyncio
-async def test_close_closes_persistent_contexts(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_close_closes_persistent_contexts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     closed: list[str] = []
 
     class FakeCtx:
         def __init__(self, name: str) -> None:
             self.name = name
+
         async def close(self) -> None:
             closed.append(self.name)
 
@@ -430,7 +517,8 @@ async def test_search_context_returns_ephemeral_handle_when_disabled(
 
 @pytest.mark.asyncio
 async def test_search_context_uses_persistent_path_when_enabled(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     """Sanity: with the toggle on (default), should_close_context stays False."""
     monkeypatch.setenv("CRAWLY_USE_PERSISTENT_PROFILES", "true")
@@ -441,24 +529,61 @@ async def test_search_context_uses_persistent_path_when_enabled(
         async def launch(self, **kwargs: Any) -> Any:
             return object()
 
-        async def launch_persistent_context(self, user_data_dir: str, **kwargs: Any) -> Any:
+        async def launch_persistent_context(
+            self, user_data_dir: str, **kwargs: Any
+        ) -> Any:
             return SimpleNamespace(
                 route=_AsyncNoop(),
                 close=_AsyncNoop(),
                 on=lambda *_a, **_k: None,
-                is_closed=lambda: False,
             )
 
     class FakePlaywright:
         chromium = FakeChromium()
+
         async def stop(self) -> None: ...
 
     async def fake_async_playwright() -> FakePlaywright:
         return FakePlaywright()
 
-    monkeypatch.setattr(playwright_api, "async_playwright", lambda: SimpleNamespace(start=fake_async_playwright))
+    monkeypatch.setattr(
+        playwright_api,
+        "async_playwright",
+        lambda: SimpleNamespace(start=fake_async_playwright),
+    )
 
     manager = BrowserManager()
     handle = await manager.search_context("duckduckgo")
     assert handle.should_close_context is False
     assert handle.first_use is True
+
+
+@pytest.mark.asyncio
+async def test_search_context_does_not_call_is_closed_and_observes_on_close(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Regression: BrowserContext has no is_closed() in patchright; the
+    cache-staleness check must rely on the "close" event hook instead."""
+    monkeypatch.setenv("CRAWLY_USE_PERSISTENT_PROFILES", "true")
+    monkeypatch.setenv("CRAWLY_PROFILE_DIR", str(tmp_path))
+    monkeypatch.setenv("CRAWLY_PROFILE_CLEANUP_ON_START", "false")
+
+    contexts: list[_StrictFakeContext] = []
+    _patch_persistent_context_playwright(monkeypatch, contexts)
+
+    manager = BrowserManager()
+
+    # Two consecutive calls must reuse the cached context — would raise if the
+    # production code touched is_closed.
+    h1 = await manager.search_context("duckduckgo")
+    h2 = await manager.search_context("duckduckgo")
+    assert h1.context is h2.context
+    assert len(contexts) == 1
+
+    # Simulate the underlying context closing (e.g. browser disconnect): the
+    # next call must allocate a fresh context.
+    contexts[0].fire_close()
+    h3 = await manager.search_context("duckduckgo")
+    assert h3.context is not h1.context
+    assert len(contexts) == 2
