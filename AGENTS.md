@@ -17,7 +17,7 @@ The authoritative design document is [docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMEN
 ## Tooling
 
 - **uv** — project and dependency manager. Use `uv sync`, `uv add`, `uv add --dev`, `uv run <cmd>`. Do not invoke `pip` directly.
-- **Playwright + Chromium** — browser automation. Host mode uses a system Chromium binary; bundled mode uses Playwright-managed Chromium.
+- **patchright + Chromium** — browser automation via the `patchright` Playwright fork, which adds the fingerprint patches we depend on for search-provider traffic. Host mode uses a system Chromium binary; bundled mode uses patchright-managed Chromium (`patchright install chromium`).
 - **MCP SDK** (`mcp>=1.27.0`) — tool server, stdio, SSE, and streamable-http transports.
 - **pydantic** — request/response models and validation.
 - **beautifulsoup4** — HTML parsing for search result extraction.
@@ -58,12 +58,12 @@ uv run ruff check .
 
 ## Approaches
 
-- **Browser lifecycle.** One Playwright Chromium browser per process, fresh incognito context per request; no cookies or storage persist. Browser manager restarts on crash/disconnect.
+- **Browser lifecycle.** One Chromium browser per process for fetch (fresh incognito context per request; no cookies persist across fetches). Per-search-provider persistent contexts with on-disk profiles keyed by provider. Profile dirs live under `CRAWLY_PROFILE_DIR` (default `~/.cache/crawly/profiles`) and are age-pruned at startup when `CRAWLY_PROFILE_CLEANUP_ON_START=true` (set automatically by the Docker entrypoint). Browser manager restarts on crash/disconnect.
 - **Browser source.** `PLAYWRIGHT_BROWSER_SOURCE=system` uses a host Chromium binary; `bundled` uses Playwright-managed Chromium without `executable_path`.
 - **Concurrency.** Process-wide semaphore caps active page navigations at 3.
 - **Timeouts.** `search`: 15s per page, 20s total. `fetch`: 15s per URL, 35s total. JS-challenge settle: 10s.
 - **SSRF.** http/https only, no embedded credentials; block loopback, link-local, private, multicast, reserved, and unspecified IPs. DNS is resolved before navigation and re-validated on browser subrequests via route interception.
-- **Challenge handling.** Normal in-browser JS execution with bounded wait for interstitial → target transition. No CAPTCHA solving, stealth plugins, proxy rotation, or fingerprint spoofing.
+- **Challenge handling.** Normal in-browser JS execution with bounded wait for interstitial → target transition. Uses patchright's fingerprint patches, per-provider persistent profiles, client-hint headers, and a homepage warm-up hop to blend with normal traffic. No CAPTCHA solving and no proxy rotation.
 - **Search.** Browser navigates real provider pages; parsing is a separate step operating on rendered HTML. Adapters per provider; redirect wrappers are explicitly unwrapped. Returns 0..5 URLs; zero results is not an error.
 - **Fetch.** Partial success is normal: `pages` maps URL → HTML, `errors` maps URL → structured error, `truncated` lists URLs whose HTML exceeded the 1 MiB per-URL cap.
 - **Container interface.** HTTP MCP via `streamable-http` is the primary container interface. The endpoint is unauthenticated in v1 and should sit behind localhost, private networking, or an auth/TLS proxy.
