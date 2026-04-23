@@ -64,7 +64,7 @@ DEFAULT_TIMEZONE_ID = "America/New_York"
 WARMUP_PAGE_TIMEOUT_SECONDS = 3
 SEARCH_CONTEXT_ACQUIRE_TIMEOUT_SECONDS = 10
 
-PROVIDER_HOMEPAGE: dict[str, str] = {
+PROVIDER_HOMEPAGE: dict[SearchProvider, str] = {
     "duckduckgo": "https://duckduckgo.com/",
     "google": "https://www.google.com/",
     "yandex": "https://yandex.ru/",
