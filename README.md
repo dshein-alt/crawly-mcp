@@ -102,6 +102,8 @@ The container defaults to:
 - `PLAYWRIGHT_BROWSER_SOURCE=bundled`
 - `CRAWLY_HOST=0.0.0.0`
 - `CRAWLY_PORT=8000`
+- `CRAWLY_PROFILE_DIR=/data/profiles`
+- `CRAWLY_PROFILE_CLEANUP_ON_START=true`
 
 The HTTP MCP endpoint is unauthenticated in v1. Deploy it behind localhost, a private network, or an auth/TLS reverse proxy.
 
@@ -154,15 +156,47 @@ mcpServers:
 Set `CRAWLY_HTTP_BIND_HOST` or `CRAWLY_HTTP_BIND_PORT` before launching if you need the
 local listener on a different interface or port.
 
+## Stealth configuration
+
+crawly uses [patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright) (a Playwright fork with bundled fingerprint patches) and keeps a small set of per-search-provider persistent profiles on disk to make its traffic blend with normal user traffic. The following env vars tune the behavior:
+
+| Env var | Default | Purpose |
+|---|---|---|
+| `CRAWLY_USE_XVFB` | `false` | Launch headed Chromium under Xvfb (instead of `--headless=new`). Requires the wrapper entrypoint. |
+| `CRAWLY_XVFB_GEOMETRY` | `1280x720x24` | Virtual display geometry passed to `xvfb-run`. |
+| `CRAWLY_PROFILE_DIR` | `~/.cache/crawly/profiles` | Parent directory for per-provider persistent profiles. **Must be a writable mount in containers.** |
+| `CRAWLY_PROFILE_CLEANUP_ON_START` | `false` | Enable age-based profile cleanup at startup. Set to `true` in the Dockerfile entrypoint. **Unsafe when multiple processes share the profile dir.** |
+| `CRAWLY_PROFILE_MAX_AGE_DAYS` | `14` | Age threshold for profile cleanup. |
+| `CRAWLY_SEARCH_JITTER_MS` | `500,1500` | Min/max ms delay between warm-up and real query. Two-int CSV. |
+| `TZ` | `America/New_York` if unset | Timezone passed to the browser context. Follows Docker convention. Leave unset unless you have a reason to override. |
+
+### Profile persistence
+
+Each provider (`duckduckgo`, `google`, `yandex`) keeps its own subdirectory under `CRAWLY_PROFILE_DIR` with cookies, localStorage, and session state. In Docker, mount a named volume at whatever path `CRAWLY_PROFILE_DIR` points to (default in the image: `/data/profiles`):
+
+```sh
+docker run -v crawly-profiles:/data/profiles crawly-mcp
+```
+
+### Fingerprint canary
+
+`scripts/fingerprint_check.py` runs a set of JS assertions against a blank page to verify the browser's JS-visible fingerprint looks like real Chrome:
+
+```sh
+uv run python scripts/fingerprint_check.py --verbose
+```
+
+Exits non-zero if any check fails. CI runs this on release tags.
+
 ## Design Notes
 
-- One shared browser per process, with a fresh incognito context per request.
-- `PLAYWRIGHT_BROWSER_SOURCE=system` uses a host Chromium binary.
-- `PLAYWRIGHT_BROWSER_SOURCE=bundled` uses Playwright-managed Chromium.
+- One shared incognito browser per process for `fetch()` (fresh context per request). `search()` uses per-provider persistent contexts with on-disk profiles keyed by provider.
+- `PLAYWRIGHT_BROWSER_SOURCE=system` uses a host Chromium binary (driven by patchright).
+- `PLAYWRIGHT_BROWSER_SOURCE=bundled` uses patchright-managed Chromium (`patchright install chromium`).
 - Global navigation concurrency cap of `3`.
 - Timeouts: `15s` per page, `20s` total for `search`, `35s` total for `fetch`.
 - SSRF guard: `http/https` only, no embedded credentials, blocks loopback/private/link-local/reserved IPs before navigation and on browser subrequests.
-- JavaScript challenge pages get a bounded `10s` settle window; there is no CAPTCHA solving, stealth fingerprinting, or site-specific bypass logic.
+- JavaScript challenge pages get a bounded `10s` settle window. `patchright` provides fingerprint patches against common bot-detection checks; provider-specific warm-up hops and client-hint headers blend with normal traffic. No CAPTCHA solving or site-specific bypass logic.
 - HTML is capped at `1 MiB` per URL; oversized responses are truncated and reported in `truncated`.
 - `robots.txt` is not consulted in v1.
 
