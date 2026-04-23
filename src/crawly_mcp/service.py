@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import random
 import time
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
 
@@ -16,11 +19,16 @@ from crawly_mcp.browser import BrowserManager
 from crawly_mcp.challenge import resolve_fetch_content
 from crawly_mcp.constants import (
     CHALLENGE_SETTLE_TIMEOUT_SECONDS,
+    CRAWLY_SEARCH_JITTER_MS_ENV_VAR,
+    DEFAULT_SEARCH_JITTER_MS,
     FETCH_PAGE_TIMEOUT_SECONDS,
     FETCH_TOTAL_TIMEOUT_SECONDS,
     MAX_HTML_BYTES,
+    PROVIDER_HOMEPAGE,
+    SEARCH_CONTEXT_ACQUIRE_TIMEOUT_SECONDS,
     SEARCH_PAGE_TIMEOUT_SECONDS,
     SEARCH_TOTAL_TIMEOUT_SECONDS,
+    WARMUP_PAGE_TIMEOUT_SECONDS,
 )
 from crawly_mcp.errors import (
     BrowserUnavailableError,
@@ -65,51 +73,26 @@ class WebSearchService:
             logger.warning("search rejected invalid input: {}", exc.errors()[0]["msg"])
             raise InvalidInputError(str(exc.errors()[0]["msg"])) from exc
 
-        logger.info(
-            "search entry provider={} context={!r}", request.provider, request.context
-        )
+        logger.info("search entry provider={} context={!r}", request.provider, request.context)
         started = time.monotonic()
 
-        guard = URLSafetyGuard()
+        guard_upfront = URLSafetyGuard()
         search_url = build_search_url(request.provider, request.context)
-        await guard.validate_user_url(search_url)
+        await guard_upfront.validate_user_url(search_url)
+
+        # Two timeouts: acquisition outside, per-request work inside.
+        try:
+            async with asyncio.timeout(SEARCH_CONTEXT_ACQUIRE_TIMEOUT_SECONDS):
+                handle = await self._browser_manager.search_context(request.provider)
+                page = await handle.context.new_page()
+        except TimeoutError as exc:
+            raise TimeoutExceededError("search context acquisition timed out") from exc
 
         try:
-            async with asyncio.timeout(SEARCH_TOTAL_TIMEOUT_SECONDS):
-                browser_context = await self._browser_manager.new_context()
-                await guard.attach(browser_context)
-                try:
-                    page = await browser_context.new_page()
-                    try:
-                        await self._browser_manager.goto(
-                            page,
-                            search_url,
-                            timeout_ms=SEARCH_PAGE_TIMEOUT_SECONDS * 1000,
-                        )
-                    except PlaywrightTimeoutError as exc:
-                        raise TimeoutExceededError("search timed out before the results page loaded") from exc
-                    except PlaywrightError as exc:
-                        blocked = guard.pop_blocked_error(page)
-                        if blocked is not None:
-                            raise blocked from exc
-                        raise NavigationFailedError(f"search navigation failed: {exc}") from exc
-
-                    title = await page.title()
-                    html = await page.content()
-                    self._raise_if_provider_blocked(request.provider, page.url, title, html)
-
-                    results = extract_search_results(request.provider, html, page.url)
-                    duration = time.monotonic() - started
-                    logger.info(
-                        "search done provider={} results={} final_url={!r} duration={:.2f}s",
-                        request.provider,
-                        len(results),
-                        page.url,
-                        duration,
-                    )
-                    return SearchResponse(urls=results)
-                finally:
-                    await browser_context.close()
+            return await self._run_search_with_timeout(
+                handle=handle, page=page, request=request,
+                search_url=search_url, started=started,
+            )
         except BrowserUnavailableError:
             logger.error("search failed provider={} reason=browser_unavailable", request.provider)
             raise
@@ -127,6 +110,66 @@ class WebSearchService:
         except TimeoutError as exc:
             logger.warning("search timed out provider={}", request.provider)
             raise TimeoutExceededError("search exceeded the overall timeout") from exc
+        finally:
+            with suppress(Exception):
+                await page.close()  # context is NOT closed
+
+    async def _run_search_with_timeout(
+        self,
+        *,
+        handle: Any,
+        page: Any,
+        request: Any,
+        search_url: str,
+        started: float,
+    ) -> SearchResponse:
+        async with asyncio.timeout(SEARCH_TOTAL_TIMEOUT_SECONDS):
+            if handle.first_use:
+                await self._maybe_warmup(page, request.provider)
+            await self._sleep_jitter()
+            try:
+                await self._browser_manager.goto(
+                    page, search_url, timeout_ms=SEARCH_PAGE_TIMEOUT_SECONDS * 1000,
+                )
+            except PlaywrightTimeoutError as exc:
+                raise TimeoutExceededError("search timed out before the results page loaded") from exc
+            except PlaywrightError as exc:
+                blocked = handle.guard.pop_blocked_error(page)
+                if blocked is not None:
+                    raise blocked from exc
+                raise NavigationFailedError(f"search navigation failed: {exc}") from exc
+
+            title = await page.title()
+            html = await page.content()
+            self._raise_if_provider_blocked(request.provider, page.url, title, html)
+
+            results = extract_search_results(request.provider, html, page.url)
+            duration = time.monotonic() - started
+            logger.info(
+                "search done provider={} results={} final_url={!r} duration={:.2f}s",
+                request.provider, len(results), page.url, duration,
+            )
+            return SearchResponse(urls=results)
+
+    async def _maybe_warmup(self, page: Any, provider: str) -> None:
+        try:
+            await self._browser_manager.goto(
+                page, PROVIDER_HOMEPAGE[provider],
+                timeout_ms=WARMUP_PAGE_TIMEOUT_SECONDS * 1000,
+            )
+        except (PlaywrightTimeoutError, PlaywrightError) as exc:
+            logger.warning("warmup failed provider={} reason={}", provider, exc)
+
+    async def _sleep_jitter(self) -> None:
+        raw = os.environ.get(CRAWLY_SEARCH_JITTER_MS_ENV_VAR)
+        if raw:
+            try:
+                lo, hi = (int(x) for x in raw.split(","))
+            except ValueError:
+                lo, hi = DEFAULT_SEARCH_JITTER_MS
+        else:
+            lo, hi = DEFAULT_SEARCH_JITTER_MS
+        await asyncio.sleep(random.uniform(lo, hi) / 1000.0)  # noqa: S311
 
     def _raise_if_provider_blocked(
         self, provider: str, final_url: str, title: str, html: str
