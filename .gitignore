@@ -62,3 +62,6 @@ test-results/
 # Agent tooling
 .codex
 .claude/
+
+# Git worktrees
+.worktrees/
