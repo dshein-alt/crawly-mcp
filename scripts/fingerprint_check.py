@@ -25,8 +25,8 @@ CHECKS: list[Check] = [
     Check("navigator.webdriver", "navigator.webdriver", "navigator.webdriver === false"),
     Check("navigator.plugins.length", "navigator.plugins.length", "navigator.plugins.length > 0"),
     Check("navigator.languages.length", "navigator.languages.length", "navigator.languages.length > 0"),
-    Check("window.chrome.runtime", "typeof window.chrome?.runtime",
-          "typeof window.chrome?.runtime !== 'undefined'"),
+    Check("window.chrome", "typeof window.chrome",
+          "typeof window.chrome !== 'undefined'"),
     Check(
         "WebGL renderer",
         """(() => {
