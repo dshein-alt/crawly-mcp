@@ -304,3 +304,56 @@ async def test_profile_cleanup_when_enabled_deletes_old_dirs(
     await manager._cleanup_stale_profiles()
     assert not old.exists()
     assert fresh.exists()
+
+
+@pytest.mark.asyncio
+async def test_xvfb_preflight_requires_display(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CRAWLY_USE_XVFB", "true")
+    monkeypatch.delenv("DISPLAY", raising=False)
+
+    manager = BrowserManager()
+    with pytest.raises(BrowserUnavailableError, match="DISPLAY"):
+        await manager._xvfb_preflight()
+
+
+@pytest.mark.asyncio
+async def test_xvfb_preflight_noop_when_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CRAWLY_USE_XVFB", raising=False)
+    monkeypatch.delenv("DISPLAY", raising=False)
+
+    manager = BrowserManager()
+    await manager._xvfb_preflight()  # no error
+
+
+@pytest.mark.asyncio
+async def test_close_closes_persistent_contexts(monkeypatch: pytest.MonkeyPatch) -> None:
+    closed: list[str] = []
+
+    class FakeCtx:
+        def __init__(self, name: str) -> None:
+            self.name = name
+        async def close(self) -> None:
+            closed.append(self.name)
+
+    manager = BrowserManager()
+    manager._search_contexts = {"duckduckgo": FakeCtx("ddg"), "google": FakeCtx("g")}
+    manager._search_guards = {"duckduckgo": object(), "google": object()}
+    await manager.close()
+    assert sorted(closed) == ["ddg", "g"]
+    assert manager._search_contexts == {}
+
+
+def test_launch_options_shared_between_paths() -> None:
+    manager = BrowserManager()
+    opts = manager._launch_options()
+    assert "--disable-dev-shm-usage" in opts["args"]
+    # By default (no CRAWLY_USE_XVFB), --headless=new must be present:
+    assert "--headless=new" in opts["args"]
+
+
+def test_launch_options_omits_headless_new_under_xvfb(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CRAWLY_USE_XVFB", "true")
+    manager = BrowserManager()
+    opts = manager._launch_options()
+    assert "--disable-dev-shm-usage" in opts["args"]
+    assert "--headless=new" not in opts["args"]

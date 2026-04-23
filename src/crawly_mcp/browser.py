@@ -80,6 +80,11 @@ class BrowserManager:
 
     async def close(self) -> None:
         async with self._lock:
+            for provider, ctx in list(self._search_contexts.items()):
+                with suppress(Exception):
+                    await ctx.close()
+                self._search_contexts.pop(provider, None)
+                self._search_guards.pop(provider, None)
             if self._browser is not None:
                 await self._browser.close()
                 self._browser = None
@@ -173,17 +178,27 @@ class BrowserManager:
         # would force legacy headless if set to True.
         return {"headless": False, "args": args}
 
+    async def _xvfb_preflight(self) -> None:
+        if os.environ.get(CRAWLY_USE_XVFB_ENV_VAR, "").lower() not in ("1", "true", "yes"):
+            return
+        if not os.environ.get("DISPLAY"):
+            raise BrowserUnavailableError(
+                "CRAWLY_USE_XVFB=true but DISPLAY is not set; "
+                "use scripts/run-with-xvfb.sh as the entrypoint"
+            )
+
     async def _ensure_browser(self) -> Browser:
         async with self._lock:
             if self._browser is not None and self._browser.is_connected():
                 return self._browser
 
+            await self._xvfb_preflight()
             source = resolve_browser_source()
             logger.info("chromium starting source={}", source)
             try:
                 if self._playwright is None:
                     self._playwright = await playwright_api.async_playwright().start()
-                launch_options = {"headless": True, "args": ["--disable-dev-shm-usage"]}
+                launch_options = self._launch_options()
                 if source == BROWSER_SOURCE_SYSTEM:
                     launch_options["executable_path"] = resolve_chromium_executable()
                 self._browser = await self._playwright.chromium.launch(**launch_options)
