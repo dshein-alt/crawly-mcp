@@ -26,18 +26,10 @@ ENV PATH="/app/.venv/bin:${PATH}" \
 COPY --from=builder --chown=pwuser:pwuser /app /app
 
 USER root
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends xvfb \
-    && rm -rf /var/lib/apt/lists/*
-
-COPY scripts/run-with-xvfb.sh /usr/local/bin/run-with-xvfb.sh
-RUN chmod +x /usr/local/bin/run-with-xvfb.sh
-
 RUN mkdir -p /data/profiles && chown -R pwuser:pwuser /data/profiles
 
 USER pwuser
 RUN /app/.venv/bin/patchright install chromium
 
 EXPOSE 8000
-ENTRYPOINT ["/usr/local/bin/run-with-xvfb.sh"]
 CMD ["crawly-mcp", "--transport", "streamable-http"]

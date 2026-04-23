@@ -12,7 +12,12 @@ import pytest
 from crawly_mcp.browser import (
     BrowserManager,
     SearchContextHandle,
+    build_standard_headers,
+    persistent_profiles_enabled,
+    resolve_browser_language,
+    resolve_browser_location,
     resolve_browser_source,
+    resolve_browser_viewport,
     resolve_chromium_executable,
 )
 from crawly_mcp.errors import BrowserUnavailableError
@@ -190,22 +195,51 @@ async def test_system_browser_source_launches_with_executable_path(
     assert launch_calls[0]["executable_path"] == os.fspath(chromium_path)
 
 
-def test_context_options_reads_tz_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("TZ", "Europe/Berlin")
+def test_context_options_reads_browser_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CRAWLY_BROWSER_LANG", "de-DE")
+    monkeypatch.setenv("CRAWLY_BROWSER_LOCATION", "Europe/Berlin")
+    monkeypatch.setenv("CRAWLY_BROWSER_VIEWPORT", "1600x900")
     manager = BrowserManager()
     opts = manager._context_options()
     assert opts["timezone_id"] == "Europe/Berlin"
-    assert opts["locale"] == "en-US"
-    assert opts["viewport"] == {"width": 1366, "height": 768}
+    assert opts["locale"] == "de-DE"
+    assert opts["viewport"] == {"width": 1600, "height": 900}
     assert opts["java_script_enabled"] is True
+    assert opts["extra_http_headers"]["Accept-Language"] == "de-DE,de;q=0.9"
     assert "sec-ch-ua" in opts["extra_http_headers"]
 
 
 def test_context_options_defaults_timezone_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CRAWLY_BROWSER_LANG", raising=False)
+    monkeypatch.delenv("CRAWLY_BROWSER_LOCATION", raising=False)
+    monkeypatch.delenv("CRAWLY_BROWSER_VIEWPORT", raising=False)
     monkeypatch.delenv("TZ", raising=False)
     manager = BrowserManager()
     opts = manager._context_options()
-    assert opts["timezone_id"] == "America/New_York"
+    assert opts["timezone_id"] == "Europe/Moscow"
+    assert opts["locale"] == "ru-RU"
+    assert opts["viewport"] == {"width": 1366, "height": 768}
+
+
+def test_resolve_browser_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CRAWLY_BROWSER_LANG", "ru-RU")
+    monkeypatch.setenv("CRAWLY_BROWSER_LOCATION", "Europe/Moscow")
+    monkeypatch.setenv("CRAWLY_BROWSER_VIEWPORT", "1920x1080")
+
+    assert resolve_browser_language() == "ru-RU"
+    assert resolve_browser_location() == "Europe/Moscow"
+    assert resolve_browser_viewport() == {"width": 1920, "height": 1080}
+
+
+def test_resolve_browser_viewport_falls_back_on_invalid_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CRAWLY_BROWSER_VIEWPORT", "garbage")
+    assert resolve_browser_viewport() == {"width": 1366, "height": 768}
+
+
+def test_build_standard_headers_sets_primary_language() -> None:
+    headers = build_standard_headers("ru-RU")
+    assert headers["Accept-Language"] == "ru-RU,ru;q=0.9"
+    assert "sec-ch-ua" in headers
 
 
 def test_search_context_handle_is_frozen_dataclass() -> None:
@@ -307,25 +341,6 @@ async def test_profile_cleanup_when_enabled_deletes_old_dirs(
 
 
 @pytest.mark.asyncio
-async def test_xvfb_preflight_requires_display(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("CRAWLY_USE_XVFB", "true")
-    monkeypatch.delenv("DISPLAY", raising=False)
-
-    manager = BrowserManager()
-    with pytest.raises(BrowserUnavailableError, match="DISPLAY"):
-        await manager._xvfb_preflight()
-
-
-@pytest.mark.asyncio
-async def test_xvfb_preflight_noop_when_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("CRAWLY_USE_XVFB", raising=False)
-    monkeypatch.delenv("DISPLAY", raising=False)
-
-    manager = BrowserManager()
-    await manager._xvfb_preflight()  # no error
-
-
-@pytest.mark.asyncio
 async def test_close_closes_persistent_contexts(monkeypatch: pytest.MonkeyPatch) -> None:
     closed: list[str] = []
 
@@ -347,13 +362,103 @@ def test_launch_options_shared_between_paths() -> None:
     manager = BrowserManager()
     opts = manager._launch_options()
     assert "--disable-dev-shm-usage" in opts["args"]
-    # By default (no CRAWLY_USE_XVFB), --headless=new must be present:
     assert "--headless=new" in opts["args"]
 
 
-def test_launch_options_omits_headless_new_under_xvfb(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("CRAWLY_USE_XVFB", "true")
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        ("", True),
+        ("true", True),
+        ("1", True),
+        ("on", True),
+        ("yes", True),
+        ("false", False),
+        ("0", False),
+        ("off", False),
+        ("no", False),
+        ("garbage", True),  # unknown values fall back to default
+    ],
+)
+def test_persistent_profiles_enabled_parses_env(
+    monkeypatch: pytest.MonkeyPatch, value: str, expected: bool
+) -> None:
+    if value:
+        monkeypatch.setenv("CRAWLY_USE_PERSISTENT_PROFILES", value)
+    else:
+        monkeypatch.delenv("CRAWLY_USE_PERSISTENT_PROFILES", raising=False)
+    assert persistent_profiles_enabled() is expected
+
+
+@pytest.mark.asyncio
+async def test_search_context_returns_ephemeral_handle_when_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With the toggle off, each call returns a distinct fresh context that
+    must be closed by the caller (should_close_context=True, first_use=True)."""
+    monkeypatch.setenv("CRAWLY_USE_PERSISTENT_PROFILES", "false")
+
+    class FakeCtx:
+        def __init__(self) -> None:
+            self.routes: list[tuple[str, Any]] = []
+            self.closed = False
+
+        async def route(self, pattern: str, handler: Any) -> None:
+            self.routes.append((pattern, handler))
+
+        async def close(self) -> None:
+            self.closed = True
+
+    created: list[FakeCtx] = []
+
+    async def fake_new_context(self: BrowserManager) -> FakeCtx:
+        ctx = FakeCtx()
+        created.append(ctx)
+        return ctx
+
+    monkeypatch.setattr(BrowserManager, "new_context", fake_new_context)
+
     manager = BrowserManager()
-    opts = manager._launch_options()
-    assert "--disable-dev-shm-usage" in opts["args"]
-    assert "--headless=new" not in opts["args"]
+    h1 = await manager.search_context("duckduckgo")
+    h2 = await manager.search_context("duckduckgo")
+
+    assert h1.first_use is True and h2.first_use is True
+    assert h1.should_close_context is True and h2.should_close_context is True
+    assert h1.context is not h2.context  # no caching when ephemeral
+    assert manager._search_contexts == {}  # cache untouched
+
+
+@pytest.mark.asyncio
+async def test_search_context_uses_persistent_path_when_enabled(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Sanity: with the toggle on (default), should_close_context stays False."""
+    monkeypatch.setenv("CRAWLY_USE_PERSISTENT_PROFILES", "true")
+    monkeypatch.setenv("CRAWLY_PROFILE_DIR", str(tmp_path))
+    monkeypatch.setenv("CRAWLY_PROFILE_CLEANUP_ON_START", "false")
+
+    class FakeChromium:
+        async def launch(self, **kwargs: Any) -> Any:
+            return object()
+
+        async def launch_persistent_context(self, user_data_dir: str, **kwargs: Any) -> Any:
+            return SimpleNamespace(
+                route=_AsyncNoop(),
+                close=_AsyncNoop(),
+                on=lambda *_a, **_k: None,
+                is_closed=lambda: False,
+            )
+
+    class FakePlaywright:
+        chromium = FakeChromium()
+        async def stop(self) -> None: ...
+
+    async def fake_async_playwright() -> FakePlaywright:
+        return FakePlaywright()
+
+    monkeypatch.setattr(playwright_api, "async_playwright", lambda: SimpleNamespace(start=fake_async_playwright))
+
+    manager = BrowserManager()
+    handle = await manager.search_context("duckduckgo")
+    assert handle.should_close_context is False
+    assert handle.first_use is True

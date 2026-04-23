@@ -11,7 +11,7 @@ from crawly_mcp.browser import SearchContextHandle
 from crawly_mcp.constants import PROVIDER_HOMEPAGE
 from crawly_mcp.errors import ChallengeBlockedError
 from crawly_mcp.security import URLSafetyGuard  # used for URL validation only
-from crawly_mcp.service import WebSearchService, truncate_html
+from crawly_mcp.service import SearchTrace, WebSearchService, truncate_html
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -137,6 +137,12 @@ def test_truncate_html_marks_oversized_payloads() -> None:
     assert truncated is True
 
 
+def test_search_trace_disabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CRAWLY_TRACE_DIR", raising=False)
+
+    assert SearchTrace.create("google", "omnicoder") is None
+
+
 class _FakePage:
     def __init__(self) -> None:
         self.url = "https://duckduckgo.com/html/?q=test"
@@ -194,6 +200,35 @@ async def test_search_warms_up_on_first_use_only(monkeypatch: pytest.MonkeyPatch
     # First call: warmup + search. Second: search only.
     assert manager.goto_calls.count(homepage) == 1
     assert sum(1 for u in manager.goto_calls if "?q=" in u and u != homepage) == 2
+
+
+@pytest.mark.asyncio
+async def test_search_closes_context_when_handle_requests(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When the handle's should_close_context=True (ephemeral mode), the
+    service must close the BrowserContext after the request."""
+    async def fake_validate(self, url: str) -> None: return None
+    monkeypatch.setattr(URLSafetyGuard, "validate_user_url", fake_validate)
+    monkeypatch.setenv("CRAWLY_SEARCH_JITTER_MS", "0,0")
+
+    closed = {"flag": False}
+
+    class _ClosableContext(_FakeContext):
+        async def close(self) -> None:
+            closed["flag"] = True
+
+    class _EphemeralBrowserManager(_FakeBrowserManager):
+        async def search_context(self, provider: str) -> SearchContextHandle:
+            return SearchContextHandle(
+                context=_ClosableContext(),
+                guard=_FakeGuard(),
+                first_use=True,
+                should_close_context=True,
+            )
+
+    manager = _EphemeralBrowserManager()
+    service = WebSearchService(browser_manager=manager)
+    await service.search(provider="duckduckgo", context="anything")
+    assert closed["flag"] is True
 
 
 @pytest.mark.asyncio

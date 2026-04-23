@@ -156,19 +156,21 @@ mcpServers:
 Set `CRAWLY_HTTP_BIND_HOST` or `CRAWLY_HTTP_BIND_PORT` before launching if you need the
 local listener on a different interface or port.
 
-## Stealth configuration
+## Browser configuration
 
-crawly uses [patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright) (a Playwright fork with bundled fingerprint patches) and keeps a small set of per-search-provider persistent profiles on disk to make its traffic blend with normal user traffic. The following env vars tune the behavior:
+crawly uses [patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright) (a Playwright fork with bundled fingerprint patches) and keeps a small set of per-search-provider persistent profiles on disk. The following env vars tune the browser persona and search trace capture:
 
 | Env var | Default | Purpose |
 |---|---|---|
-| `CRAWLY_USE_XVFB` | `false` | Launch headed Chromium under Xvfb (instead of `--headless=new`). Requires the wrapper entrypoint. |
-| `CRAWLY_XVFB_GEOMETRY` | `1280x720x24` | Virtual display geometry passed to `xvfb-run`. |
-| `CRAWLY_PROFILE_DIR` | `~/.cache/crawly/profiles` | Parent directory for per-provider persistent profiles. **Must be a writable mount in containers.** |
+| `CRAWLY_BROWSER_LANG` | `ru-RU` | Browser `locale` and primary `Accept-Language` value passed to Playwright. |
+| `CRAWLY_BROWSER_LOCATION` | `Europe/Moscow` | Browser timezone id. `TZ` is used only as a fallback when this env var is unset. |
+| `CRAWLY_BROWSER_VIEWPORT` | `1366x768` | Browser viewport in `WIDTHxHEIGHT` form. Invalid values fall back to the default. |
+| `CRAWLY_USE_PERSISTENT_PROFILES` | `true` | Toggle per-provider persistent search profiles. Set to `false` to make `search()` use a fresh incognito context per request (warm-up still runs). Useful for A/B-testing the persistence feature or for stateless deployments. |
+| `CRAWLY_PROFILE_DIR` | `~/.cache/crawly/profiles` | Parent directory for per-provider persistent profiles. **Must be a writable mount in containers.** Ignored when `CRAWLY_USE_PERSISTENT_PROFILES=false`. |
 | `CRAWLY_PROFILE_CLEANUP_ON_START` | `false` | Enable age-based profile cleanup at startup. Set to `true` in the Dockerfile entrypoint. **Unsafe when multiple processes share the profile dir.** |
 | `CRAWLY_PROFILE_MAX_AGE_DAYS` | `14` | Age threshold for profile cleanup. |
 | `CRAWLY_SEARCH_JITTER_MS` | `500,1500` | Min/max ms delay between warm-up and real query. Two-int CSV. |
-| `TZ` | `America/New_York` if unset | Timezone passed to the browser context. Follows Docker convention. Leave unset unless you have a reason to override. |
+| `CRAWLY_TRACE_DIR` | unset | Opt-in per-search artifact dump directory. When set, each `search()` writes `meta.json`, `fingerprint.json`, `network.jsonl`, `page.html`, and `screenshot.png`. |
 
 ### Profile persistence
 
@@ -188,6 +190,21 @@ uv run python scripts/fingerprint_check.py --verbose
 
 Exits non-zero if any check fails. CI runs this on release tags.
 
+### Search tracing
+
+Tracing is disabled by default. Set `CRAWLY_TRACE_DIR` only when you want to compare an automated run with manually collected artifacts:
+
+```sh
+CRAWLY_TRACE_DIR=./dump/trace uv run crawly-mcp --transport streamable-http
+```
+
+Each traced `search()` call writes one directory containing:
+
+- `meta.json` with provider, query, warm-up/jitter data, final URL/title, and parsed result URLs
+- `fingerprint.json` with JS-visible browser properties
+- `network.jsonl` with request/response/failure events
+- `page.html` and `screenshot.png` from the terminal page state
+
 ## Design Notes
 
 - One shared incognito browser per process for `fetch()` (fresh context per request). `search()` uses per-provider persistent contexts with on-disk profiles keyed by provider.
@@ -196,7 +213,7 @@ Exits non-zero if any check fails. CI runs this on release tags.
 - Global navigation concurrency cap of `3`.
 - Timeouts: `15s` per page, `20s` total for `search`, `35s` total for `fetch`.
 - SSRF guard: `http/https` only, no embedded credentials, blocks loopback/private/link-local/reserved IPs before navigation and on browser subrequests.
-- JavaScript challenge pages get a bounded `10s` settle window. `patchright` provides fingerprint patches against common bot-detection checks; provider-specific warm-up hops and client-hint headers blend with normal traffic. No CAPTCHA solving or site-specific bypass logic.
+- JavaScript challenge pages get a bounded `10s` settle window. `patchright` provides fingerprint patches against common bot-detection checks; provider-specific warm-up hops and synthetic client-hint headers keep the browser identity stable across requests. No CAPTCHA solving or site-specific bypass logic.
 - HTML is capped at `1 MiB` per URL; oversized responses are truncated and reported in `truncated`.
 - `robots.txt` is not consulted in v1.
 

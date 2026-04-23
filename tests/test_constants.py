@@ -5,17 +5,22 @@ from crawly_mcp import constants
 def test_new_stealth_constants_exported() -> None:
     assert constants.WARMUP_PAGE_TIMEOUT_SECONDS == 3
     assert constants.SEARCH_CONTEXT_ACQUIRE_TIMEOUT_SECONDS == 10
-    assert constants.CRAWLY_USE_XVFB_ENV_VAR == "CRAWLY_USE_XVFB"
-    assert constants.CRAWLY_XVFB_GEOMETRY_ENV_VAR == "CRAWLY_XVFB_GEOMETRY"
+    assert constants.BROWSER_LANG_ENV_VAR == "CRAWLY_BROWSER_LANG"
+    assert constants.BROWSER_LOCATION_ENV_VAR == "CRAWLY_BROWSER_LOCATION"
+    assert constants.BROWSER_VIEWPORT_ENV_VAR == "CRAWLY_BROWSER_VIEWPORT"
+    assert constants.CRAWLY_TRACE_DIR_ENV_VAR == "CRAWLY_TRACE_DIR"
     assert constants.CRAWLY_PROFILE_DIR_ENV_VAR == "CRAWLY_PROFILE_DIR"
     assert constants.CRAWLY_PROFILE_CLEANUP_ON_START_ENV_VAR == "CRAWLY_PROFILE_CLEANUP_ON_START"
     assert constants.CRAWLY_PROFILE_MAX_AGE_DAYS_ENV_VAR == "CRAWLY_PROFILE_MAX_AGE_DAYS"
     assert constants.CRAWLY_SEARCH_JITTER_MS_ENV_VAR == "CRAWLY_SEARCH_JITTER_MS"
-    assert constants.DEFAULT_XVFB_GEOMETRY == "1280x720x24"
+    assert constants.CRAWLY_USE_PERSISTENT_PROFILES_ENV_VAR == "CRAWLY_USE_PERSISTENT_PROFILES"
     assert constants.DEFAULT_PROFILE_DIR == "~/.cache/crawly/profiles"
     assert constants.DEFAULT_PROFILE_MAX_AGE_DAYS == 14
     assert constants.DEFAULT_SEARCH_JITTER_MS == (500, 1500)
-    assert constants.DEFAULT_TIMEZONE_ID == "America/New_York"
+    assert constants.DEFAULT_BROWSER_LANG == "ru-RU"
+    assert constants.DEFAULT_BROWSER_LOCATION == "Europe/Moscow"
+    assert constants.DEFAULT_BROWSER_VIEWPORT == "1366x768"
+    assert constants.DEFAULT_TIMEZONE_ID == "Europe/Moscow"
 
 
 def test_client_hint_headers_present() -> None:

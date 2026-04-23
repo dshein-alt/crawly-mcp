@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import shutil
 import time
 from contextlib import suppress
@@ -21,14 +22,20 @@ from patchright.async_api import (
 
 from crawly_mcp.constants import (
     ALLOWED_BROWSER_SOURCES,
+    BROWSER_LANG_ENV_VAR,
+    BROWSER_LOCATION_ENV_VAR,
     BROWSER_SOURCE_SYSTEM,
+    BROWSER_VIEWPORT_ENV_VAR,
     CRAWLY_PROFILE_CLEANUP_ON_START_ENV_VAR,
     CRAWLY_PROFILE_DIR_ENV_VAR,
     CRAWLY_PROFILE_MAX_AGE_DAYS_ENV_VAR,
-    CRAWLY_USE_XVFB_ENV_VAR,
+    CRAWLY_USE_PERSISTENT_PROFILES_ENV_VAR,
+    DEFAULT_BROWSER_LANG,
+    DEFAULT_BROWSER_VIEWPORT,
     DEFAULT_PROFILE_DIR,
     DEFAULT_PROFILE_MAX_AGE_DAYS,
     DEFAULT_TIMEZONE_ID,
+    DEFAULT_USE_PERSISTENT_PROFILES,
     MAX_CONCURRENT_NAVIGATIONS,
     PLAYWRIGHT_BROWSER_SOURCE_ENV_VAR,
     STANDARD_HEADERS,
@@ -44,6 +51,7 @@ class SearchContextHandle:
     context: BrowserContext
     guard: URLSafetyGuard
     first_use: bool
+    should_close_context: bool = False
 
 
 class BrowserManager:
@@ -64,14 +72,15 @@ class BrowserManager:
         return await browser.new_context(**self._context_options())
 
     def _context_options(self) -> dict[str, Any]:
-        tz = os.environ.get("TZ") or DEFAULT_TIMEZONE_ID
+        lang = resolve_browser_language()
+        tz = resolve_browser_location()
         return {
             "user_agent": STANDARD_USER_AGENT,
-            "locale": "en-US",
+            "locale": lang,
             "timezone_id": tz,
-            "viewport": {"width": 1366, "height": 768},
+            "viewport": resolve_browser_viewport(),
             "java_script_enabled": True,
-            "extra_http_headers": STANDARD_HEADERS,
+            "extra_http_headers": build_standard_headers(lang),
         }
 
     async def goto(self, page: Page, url: str, *, timeout_ms: int) -> None:
@@ -93,6 +102,8 @@ class BrowserManager:
                 self._playwright = None
 
     async def search_context(self, provider: str) -> SearchContextHandle:
+        if not persistent_profiles_enabled():
+            return await self._make_ephemeral_search_context()
         async with self._lock:
             cached = self._search_contexts.get(provider)
             if cached is not None and not cached.is_closed():
@@ -113,6 +124,16 @@ class BrowserManager:
             self._search_contexts[provider] = ctx
             self._search_guards[provider] = guard
             return SearchContextHandle(context=ctx, guard=guard, first_use=True)
+
+    async def _make_ephemeral_search_context(self) -> SearchContextHandle:
+        # No cache; treat every call as a fresh visitor — warm-up always runs
+        # and the caller closes the context after use.
+        ctx = await self.new_context()
+        guard = URLSafetyGuard()
+        await guard.attach(ctx)
+        return SearchContextHandle(
+            context=ctx, guard=guard, first_use=True, should_close_context=True,
+        )
 
     async def _cleanup_stale_profiles(self) -> None:
         if os.environ.get(CRAWLY_PROFILE_CLEANUP_ON_START_ENV_VAR, "").lower() not in ("1", "true", "yes"):
@@ -168,31 +189,14 @@ class BrowserManager:
         _context_options() (user_agent, locale, timezone_id, viewport,
         java_script_enabled, extra_http_headers); those two dicts get
         merged via **unpack at call sites."""
-        args = ["--disable-dev-shm-usage"]
-        xvfb = os.environ.get(CRAWLY_USE_XVFB_ENV_VAR, "").lower() in ("1", "true", "yes")
-        if not xvfb:
-            args.append("--headless=new")
-        # headless=False in both branches is intentional: under Xvfb the
-        # browser is headed inside the virtual display; under --headless=new
-        # the arg drives headlessness and Playwright's `headless` kwarg
-        # would force legacy headless if set to True.
+        args = ["--disable-dev-shm-usage", "--headless=new"]
         return {"headless": False, "args": args}
-
-    async def _xvfb_preflight(self) -> None:
-        if os.environ.get(CRAWLY_USE_XVFB_ENV_VAR, "").lower() not in ("1", "true", "yes"):
-            return
-        if not os.environ.get("DISPLAY"):
-            raise BrowserUnavailableError(
-                "CRAWLY_USE_XVFB=true but DISPLAY is not set; "
-                "use scripts/run-with-xvfb.sh as the entrypoint"
-            )
 
     async def _ensure_browser(self) -> Browser:
         async with self._lock:
             if self._browser is not None and self._browser.is_connected():
                 return self._browser
 
-            await self._xvfb_preflight()
             source = resolve_browser_source()
             logger.info("chromium starting source={}", source)
             try:
@@ -273,3 +277,48 @@ def resolve_browser_source() -> str:
     raise BrowserUnavailableError(
         f"{PLAYWRIGHT_BROWSER_SOURCE_ENV_VAR} must be one of: {allowed}"
     )
+
+
+def persistent_profiles_enabled() -> bool:
+    raw = os.environ.get(CRAWLY_USE_PERSISTENT_PROFILES_ENV_VAR, "").strip().lower()
+    if not raw:
+        return DEFAULT_USE_PERSISTENT_PROFILES
+    if raw in ("0", "false", "no", "off"):
+        return False
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    return DEFAULT_USE_PERSISTENT_PROFILES
+
+
+def resolve_browser_language() -> str:
+    raw = os.environ.get(BROWSER_LANG_ENV_VAR, "").strip()
+    return raw or DEFAULT_BROWSER_LANG
+
+
+def resolve_browser_location() -> str:
+    raw = os.environ.get(BROWSER_LOCATION_ENV_VAR, "").strip()
+    if raw:
+        return raw
+    tz = os.environ.get("TZ", "").strip()
+    return tz or DEFAULT_TIMEZONE_ID
+
+
+def resolve_browser_viewport() -> dict[str, int]:
+    raw = os.environ.get(BROWSER_VIEWPORT_ENV_VAR, "").strip() or DEFAULT_BROWSER_VIEWPORT
+    match = re.fullmatch(r"(\d{2,5})x(\d{2,5})", raw)
+    if match is None:
+        width, height = (int(value) for value in DEFAULT_BROWSER_VIEWPORT.split("x", 1))
+        return {"width": width, "height": height}
+    width, height = (int(value) for value in match.groups())
+    return {"width": width, "height": height}
+
+
+def build_standard_headers(language: str) -> dict[str, str]:
+    headers = dict(STANDARD_HEADERS)
+    primary = language.split(",", 1)[0].strip()
+    base = primary.split("-")[0].strip()
+    if primary and base and base != primary:
+        headers["Accept-Language"] = f"{primary},{base};q=0.9"
+    elif primary:
+        headers["Accept-Language"] = primary
+    return headers
