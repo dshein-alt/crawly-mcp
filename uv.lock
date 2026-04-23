@@ -155,7 +155,6 @@ dependencies = [
     { name = "loguru" },
     { name = "mcp" },
     { name = "patchright" },
-    { name = "playwright" },
     { name = "pydantic" },
 ]
 
@@ -172,7 +171,6 @@ requires-dist = [
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "mcp", specifier = ">=1.27.0" },
     { name = "patchright", specifier = ">=1.49,<2.0" },
-    { name = "playwright", specifier = ">=1.58.0" },
     { name = "pydantic", specifier = ">=2.13.3" },
 ]
 
@@ -454,25 +452,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/bb/63/3b054f25a44721b9a530ec12de33d6b5d94cd9952748c2586b2a64ef62ba/patchright-1.58.2-py3-none-win32.whl", hash = "sha256:7dac724893fde90d726b125f7c35507a2afb5480c23cb57f88a31484d131de98", size = 36802278, upload-time = "2026-03-07T07:42:59.362Z" },
     { url = "https://files.pythonhosted.org/packages/c4/11/f06d2f6ae8e0c1aea4b17b18a105dc2ad28e358217896eb3720e80e2d297/patchright-1.58.2-py3-none-win_amd64.whl", hash = "sha256:9b740c13343a6e412efe052d0c17a65910cc4e3fd0fd6b62c1ac8dc1eec4c158", size = 36802282, upload-time = "2026-03-07T07:43:02.775Z" },
     { url = "https://files.pythonhosted.org/packages/f5/ae/a85dca1ebcdfc63e5838783c0929d82066dacd7448e29911d052bbd286cb/patchright-1.58.2-py3-none-win_arm64.whl", hash = "sha256:958cd884787d140dd464ec2901ea85b9634aad5e8444a267f407ee648de04667", size = 33072202, upload-time = "2026-03-07T07:43:06.344Z" },
-]
-
-[[package]]
-name = "playwright"
-version = "1.58.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "greenlet" },
-    { name = "pyee" },
-]
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/f8/c9/9c6061d5703267f1baae6a4647bfd1862e386fbfdb97d889f6f6ae9e3f64/playwright-1.58.0-py3-none-macosx_10_13_x86_64.whl", hash = "sha256:96e3204aac292ee639edbfdef6298b4be2ea0a55a16b7068df91adac077cc606", size = 42251098, upload-time = "2026-01-30T15:09:24.028Z" },
-    { url = "https://files.pythonhosted.org/packages/e0/40/59d34a756e02f8c670f0fee987d46f7ee53d05447d43cd114ca015cb168c/playwright-1.58.0-py3-none-macosx_11_0_arm64.whl", hash = "sha256:70c763694739d28df71ed578b9c8202bb83e8fe8fb9268c04dd13afe36301f71", size = 41039625, upload-time = "2026-01-30T15:09:27.558Z" },
-    { url = "https://files.pythonhosted.org/packages/e1/ee/3ce6209c9c74a650aac9028c621f357a34ea5cd4d950700f8e2c4b7fe2c4/playwright-1.58.0-py3-none-macosx_11_0_universal2.whl", hash = "sha256:185e0132578733d02802dfddfbbc35f42be23a45ff49ccae5081f25952238117", size = 42251098, upload-time = "2026-01-30T15:09:30.461Z" },
-    { url = "https://files.pythonhosted.org/packages/f1/af/009958cbf23fac551a940d34e3206e6c7eed2b8c940d0c3afd1feb0b0589/playwright-1.58.0-py3-none-manylinux1_x86_64.whl", hash = "sha256:c95568ba1eda83812598c1dc9be60b4406dffd60b149bc1536180ad108723d6b", size = 46235268, upload-time = "2026-01-30T15:09:33.787Z" },
-    { url = "https://files.pythonhosted.org/packages/d9/a6/0e66ad04b6d3440dae73efb39540c5685c5fc95b17c8b29340b62abbd952/playwright-1.58.0-py3-none-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:8f9999948f1ab541d98812de25e3a8c410776aa516d948807140aff797b4bffa", size = 45964214, upload-time = "2026-01-30T15:09:36.751Z" },
-    { url = "https://files.pythonhosted.org/packages/0e/4b/236e60ab9f6d62ed0fd32150d61f1f494cefbf02304c0061e78ed80c1c32/playwright-1.58.0-py3-none-win32.whl", hash = "sha256:1e03be090e75a0fabbdaeab65ce17c308c425d879fa48bb1d7986f96bfad0b99", size = 36815998, upload-time = "2026-01-30T15:09:39.627Z" },
-    { url = "https://files.pythonhosted.org/packages/41/f8/5ec599c5e59d2f2f336a05b4f318e733077cd5044f24adb6f86900c3e6a7/playwright-1.58.0-py3-none-win_amd64.whl", hash = "sha256:a2bf639d0ce33b3ba38de777e08697b0d8f3dc07ab6802e4ac53fb65e3907af8", size = 36816005, upload-time = "2026-01-30T15:09:42.449Z" },
-    { url = "https://files.pythonhosted.org/packages/c8/c4/cc0229fea55c87d6c9c67fe44a21e2cd28d1d558a5478ed4d617e9fb0c93/playwright-1.58.0-py3-none-win_arm64.whl", hash = "sha256:32ffe5c303901a13a0ecab91d1c3f74baf73b84f4bedbb6b935f5bc11cc98e1b", size = 33085919, upload-time = "2026-01-30T15:09:45.71Z" },
 ]
 
 [[package]]

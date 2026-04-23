@@ -2,7 +2,7 @@ import asyncio
 import os
 from pathlib import Path
 
-import playwright.async_api as playwright_api
+import patchright.async_api as playwright_api
 import pytest
 
 from crawly_mcp.browser import (

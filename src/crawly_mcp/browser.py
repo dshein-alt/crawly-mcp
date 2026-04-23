@@ -6,9 +6,9 @@ import shutil
 from contextlib import suppress
 from pathlib import Path
 
-import playwright.async_api as playwright_api
+import patchright.async_api as playwright_api
 from loguru import logger
-from playwright.async_api import (
+from patchright.async_api import (
     Browser,
     BrowserContext,
     Error as PlaywrightError,

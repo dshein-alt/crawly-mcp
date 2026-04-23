@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from loguru import logger
-from playwright.async_api import (
+from patchright.async_api import (
     Error as PlaywrightError,
     TimeoutError as PlaywrightTimeoutError,
 )
