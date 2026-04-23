@@ -13,6 +13,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Add an Ubuntu-based container image with Playwright-managed Chromium.
 - Add `CRAWLY_HOST` and `CRAWLY_PORT` environment variables for the MCP server.
 - Add runtime logging via loguru with `CRAWLY_LOG_LEVEL` (default `INFO`); output goes to stderr so stdio MCP stays clean.
+- Add a project-local launcher script for starting the containerized stdio MCP server from the current checkout.
+- Add a project-local launcher script for starting the containerized HTTP MCP server from the current checkout.
 
 ### Changed
 

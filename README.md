@@ -85,6 +85,18 @@ Override the transport to stdio:
 docker run --rm --init -i crawly-mcp:local crawly-mcp --transport stdio
 ```
 
+Launch the stdio MCP server from the current checkout with an auto-build step:
+
+```sh
+./scripts/run_crawly_mcp_stdio_container.sh
+```
+
+Launch the HTTP MCP server from the current checkout:
+
+```sh
+./scripts/run_crawly_mcp_http_container.sh
+```
+
 The container defaults to:
 
 - `PLAYWRIGHT_BROWSER_SOURCE=bundled`
@@ -99,6 +111,48 @@ Published images are intended to be:
 - `<dockerhub-namespace>/crawly-mcp`
 
 The first GHCR publish may need a one-time manual visibility change to make the package public.
+
+## MCP Client Config
+
+For MCP clients that can launch a local command, point them at the project script so the
+server comes from the current checkout:
+
+```yaml
+mcpServers:
+  - name: Crawly MCP
+    command: /path/to/crawly/scripts/run_crawly_mcp_stdio_container.sh
+    args: []
+    env:
+      CRAWLY_CONTAINER_ENGINE: docker
+```
+
+Replace `/path/to/crawly` with your checkout path. The launcher rebuilds
+`crawly-mcp:local` before starting the stdio server so container contents stay aligned
+with local source changes. Set `CRAWLY_MCP_SKIP_BUILD=1` if you want to skip that build
+when the local image is already current.
+
+For clients that support HTTP MCP, start the local containerized server first:
+
+```sh
+./scripts/run_crawly_mcp_http_container.sh
+```
+
+Then point the client at:
+
+```text
+http://127.0.0.1:8000/mcp
+```
+
+If your client's MCP config accepts direct URLs, the entry is typically shaped like:
+
+```yaml
+mcpServers:
+  - name: Crawly MCP
+    url: http://127.0.0.1:8000/mcp
+```
+
+Set `CRAWLY_HTTP_BIND_HOST` or `CRAWLY_HTTP_BIND_PORT` before launching if you need the
+local listener on a different interface or port.
 
 ## Design Notes
 
