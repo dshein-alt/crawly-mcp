@@ -8,6 +8,7 @@ import sys
 from crawly_mcp._logging import configure_logging
 from crawly_mcp.browser import BrowserManager
 from crawly_mcp.errors import WebSearchError
+from crawly_mcp.page_search import PageSearchService
 from crawly_mcp.service import WebSearchService
 
 
@@ -31,6 +32,13 @@ def build_parser() -> argparse.ArgumentParser:
         "fetch", help="Fetch URLs and print rendered HTML as JSON."
     )
     fetch_parser.add_argument("urls", nargs="+", help="Up to 5 URLs to fetch.")
+
+    page_search_parser = subparsers.add_parser(
+        "page-search",
+        help="Search for content on a single page via the cascade.",
+    )
+    page_search_parser.add_argument("--url", required=True, help="Page URL to search.")
+    page_search_parser.add_argument("--query", required=True, help="Search query text.")
 
     return parser
 
@@ -57,6 +65,17 @@ async def run_fetch_command(urls: list[str]) -> int:
     return 0
 
 
+async def _run_page_search(url: str, query: str) -> int:
+    browser_manager = BrowserManager()
+    try:
+        service = PageSearchService(browser_manager)
+        response = await service.search(url=url, query=query)
+        print(response.model_dump_json())
+    finally:
+        await browser_manager.close()
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -67,6 +86,8 @@ def main(argv: list[str] | None = None) -> int:
             return asyncio.run(run_search_command(args.provider, args.context))
         if args.command == "fetch":
             return asyncio.run(run_fetch_command(args.urls))
+        if args.command == "page-search":
+            return asyncio.run(_run_page_search(args.url, args.query))
     except WebSearchError as exc:
         print(json.dumps({"error": exc.to_payload()}, indent=2), file=sys.stderr)
         return 1
