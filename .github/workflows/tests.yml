@@ -52,4 +52,6 @@ jobs:
       - name: Install Chromium
         run: uv run patchright install chromium --with-deps
       - name: Run fingerprint canary
+        env:
+          PLAYWRIGHT_BROWSER_SOURCE: bundled
         run: uv run python scripts/fingerprint_check.py

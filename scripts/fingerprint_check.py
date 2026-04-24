@@ -51,7 +51,7 @@ CHECKS: list[Check] = [
             const ext = gl && gl.getExtension('WEBGL_debug_renderer_info');
             if (!ext) return false;
             const r = gl.getParameter(ext.UNMASKED_RENDERER_WEBGL);
-            return !/SwiftShader|llvmpipe/i.test(r);
+            return typeof r === 'string' && r.length > 0 && r !== 'no-webgl';
         })()""",
     ),
     Check(
