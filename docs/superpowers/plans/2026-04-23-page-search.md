@@ -693,19 +693,36 @@ def _hit_for(action: str, base_url: str, input_name: str) -> SearchFormHit:
     return SearchFormHit(action=urljoin(base_url, action), input_name=input_name)
 
 
-def _first_named_input(form) -> str | None:
+_TEXT_LIKE_INPUT_TYPES = {"", "search", "text", "email", "url", "tel"}
+_NON_QUERY_INPUT_TYPES = {
+    "button", "checkbox", "file", "hidden", "image", "radio", "reset", "submit",
+}
+
+
+def _search_input_name(form) -> str | None:
+    fallback_name: str | None = None
+    first_text_like_name: str | None = None
     for inp in form.find_all("input"):
-        name = (inp.get("name") or "").strip()
-        if name:
-            return name
-    return None
+        raw_name = (inp.get("name") or "").strip()
+        if not raw_name:
+            continue
+        input_type = (inp.get("type") or "").strip().lower()
+        if input_type == "search":
+            return raw_name
+        if input_type in _NON_QUERY_INPUT_TYPES:
+            continue
+        if fallback_name is None and raw_name.lower() in _SEARCH_INPUT_NAMES:
+            fallback_name = raw_name
+        if first_text_like_name is None and input_type in _TEXT_LIKE_INPUT_TYPES:
+            first_text_like_name = raw_name
+    return fallback_name or first_text_like_name
 
 
 def _match_role_search(soup, base_url: str) -> SearchFormHit | None:
     for form, action in _iter_get_forms(soup):
         if (form.get("role") or "").lower() != "search":
             continue
-        name = _first_named_input(form)
+        name = _search_input_name(form)
         if name:
             return _hit_for(action, base_url, name)
     return None
@@ -725,9 +742,9 @@ def _match_input_type_search(soup, base_url: str) -> SearchFormHit | None:
 def _match_input_name_fallback(soup, base_url: str) -> SearchFormHit | None:
     for form, action in _iter_get_forms(soup):
         for inp in form.find_all("input"):
-            name = (inp.get("name") or "").strip().lower()
-            if name in _SEARCH_INPUT_NAMES:
-                return _hit_for(action, base_url, name)
+            raw_name = (inp.get("name") or "").strip()
+            if raw_name.lower() in _SEARCH_INPUT_NAMES:
+                return _hit_for(action, base_url, raw_name)
     return None
 ```
 
@@ -1154,9 +1171,8 @@ class OpenSearchTier:
             return []
         results_url = self._substitute(template, query)
         html = await self._fetch_page(results_url)
-        return _snippets_from_html(
-            html,
-            query,
+        return TierExecutionResult(
+            results=_snippets_from_html(html, query),
             results_url=results_url,
         )
 
@@ -1192,8 +1208,6 @@ class OpenSearchTier:
 def _snippets_from_html(
     html: str,
     query: str,
-    *,
-    results_url: str,
 ) -> list[PageSearchResult]:
     """Shared extractor for tier 1b and tier 2: run build_snippets on the
     rendered text of a navigated results page. url=None per result (we cannot
@@ -1474,7 +1488,10 @@ class FormTier:
     async def execute(self, hit: FormHit, query: str) -> list[PageSearchResult]:
         results_url = self._append_query(hit.form.action, hit.form.input_name, query)
         html = await self._fetch_page(results_url)
-        return _snippets_from_html(html, query, results_url=results_url)
+        return TierExecutionResult(
+            results=_snippets_from_html(html, query),
+            results_url=results_url,
+        )
 
     @staticmethod
     def _append_query(action: str, param_name: str, query: str) -> str:
@@ -1813,7 +1830,7 @@ new_string (same first two lines, then the new methods):
                         continue
                     attempted.append(tier.name)
                     try:
-                        results = await asyncio.wait_for(
+                        outcome = await asyncio.wait_for(
                             tier.execute(hit, request.query),
                             PAGE_SEARCH_TIER_TIMEOUT_SECONDS,
                         )
@@ -1826,12 +1843,13 @@ new_string (same first two lines, then the new methods):
                             tier.name, type(exc).__name__, exc,
                         )
                         continue
+                    results, results_url = self._normalize_tier_outcome(outcome)
                     if results:
                         return self._respond(
                             mode=tier.name,
                             attempted=attempted,
                             source_url=request.url,
-                            results_url=None,
+                            results_url=results_url,
                             results=results,
                         )
 

@@ -9,6 +9,7 @@ Use this when a small local LLM needs facts from multiple pages and raw fetch re
 
 For `crawly-mcp`, prefer the built-in bounded path first:
 
+- call `page_search(url, query)` first when the task is really "find this within a known page or docs site"
 - call `search(...)` to collect candidate URLs
 - call `fetch(urls=[...], content_format="text")` instead of raw HTML
 - keep `urls` small, usually `1..3` per fetch for local models
@@ -22,7 +23,7 @@ For `crawly-mcp`, prefer the built-in bounded path first:
 - context overflows after a few fetches
 - evidence gathering where you need structured per-source notes
 
-Do not use for single-page questions or when search snippets already answer the question.
+Do not use for single-page questions or when search snippets already answer the question. For a single known page or docs entrypoint, use `page_search(...)` before broader web search.
 
 ## Default Workflow
 
@@ -38,9 +39,11 @@ Do not use for single-page questions or when search snippets already answer the 
 
 For this repo and its Docker image:
 
+- Prefer `page_search(url, query)` over `search(...)` + `fetch(...)` when you already know the target page or docs site.
 - Prefer `fetch(..., content_format="text")` over post-processing HTML yourself.
 - Use `content_format="html"` only when markup structure is the actual task.
 - Treat `pages[url]` as bounded source text, not as something to dump straight back into the next prompt.
+- If `page_search(...)` returns `mode="opensearch"` or `mode="form"`, keep `results_url` because it identifies the landed search page.
 
 ## Why This Works
 
@@ -56,6 +59,7 @@ For this repo and its Docker image:
 ## Common Mistakes
 
 - Fetching raw HTML for article-style extraction
+- Using `search(...)` when a known page plus `page_search(...)` would answer faster
 - Sending all fetched pages into one prompt
 - Asking the model to “summarize the page” without a schema
 - Reducing all extracted records in one pass
