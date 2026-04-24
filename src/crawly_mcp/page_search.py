@@ -354,6 +354,22 @@ class PageSearchService:
     ) -> None:
         self._browser_manager = browser_manager
         self._http_client_factory = http_client_factory
+        self._tiers: list = self._build_default_tiers()
+
+    def _build_default_tiers(self) -> list:
+        async def fetch_page(url: str) -> str:
+            return await self._fetch_source_html(url)
+
+        return [
+            AlgoliaTier(http_client_factory=self._http_client_factory),
+            OpenSearchTier(
+                http_client_factory=self._http_client_factory,
+                page_fetcher=fetch_page,
+            ),
+            ReadthedocsTier(http_client_factory=self._http_client_factory),
+            FormTier(page_fetcher=fetch_page),
+            TextTier(),
+        ]
 
     async def _fetch_source_html(self, url: str) -> str:
         browser_context = await self._browser_manager.new_context()
@@ -375,3 +391,95 @@ class PageSearchService:
                     await page.close()
         finally:
             await browser_context.close()
+
+    async def search(self, *, url: str, query: str) -> PageSearchResponse:
+        try:
+            request = PageSearchRequest(url=url, query=query)
+        except ValidationError as exc:
+            raise InvalidInputError(str(exc.errors()[0]["msg"])) from exc
+
+        await URLSafetyGuard().validate_user_url(request.url)
+
+        logger.info(
+            "page_search entry url={!r} query={!r}", request.url, request.query
+        )
+        started = asyncio.get_running_loop().time()
+
+        try:
+            async with asyncio.timeout(FETCH_TOTAL_TIMEOUT_SECONDS):
+                source_html = await self._fetch_source_html(request.url)
+                attempted: list[str] = []
+
+                for tier in self._tiers:
+                    if tier.name == "text":
+                        break
+                    hit = tier.detect(source_html, request.url)
+                    if hit is None:
+                        continue
+                    attempted.append(tier.name)
+                    try:
+                        results = await asyncio.wait_for(
+                            tier.execute(hit, request.query),
+                            PAGE_SEARCH_TIER_TIMEOUT_SECONDS,
+                        )
+                    except asyncio.TimeoutError:
+                        logger.warning("page_search tier={} timed out", tier.name)
+                        continue
+                    except Exception as exc:
+                        logger.warning(
+                            "page_search tier={} failed: {}: {}",
+                            tier.name,
+                            type(exc).__name__,
+                            exc,
+                        )
+                        continue
+                    if results:
+                        return self._respond(
+                            mode=tier.name,
+                            attempted=attempted,
+                            source_url=request.url,
+                            results_url=None,
+                            results=results,
+                        )
+
+                text_tier = self._tiers[-1]
+                attempted.append("text")
+                hit = text_tier.detect(source_html, request.url)
+                text_results = await text_tier.execute(hit, request.query)
+                return self._respond(
+                    mode="text",
+                    attempted=attempted,
+                    source_url=request.url,
+                    results_url=None,
+                    results=text_results,
+                )
+        except asyncio.TimeoutError as exc:
+            raise TimeoutExceededError(
+                "page_search exceeded the overall timeout"
+            ) from exc
+        finally:
+            duration = asyncio.get_running_loop().time() - started
+            logger.info("page_search done duration={:.2f}s", duration)
+
+    def _respond(
+        self,
+        *,
+        mode: str,
+        attempted: list[str],
+        source_url: str,
+        results_url: str | None,
+        results: list[PageSearchResult],
+    ) -> PageSearchResponse:
+        response = PageSearchResponse(
+            mode=mode,
+            attempted=attempted,
+            source_url=source_url,
+            results_url=results_url,
+            results=results[:MAX_SEARCH_RESULTS],
+            truncated=False,
+        )
+        return _truncate_page_search_response(response)
+
+
+def _truncate_page_search_response(response: PageSearchResponse) -> PageSearchResponse:
+    return response

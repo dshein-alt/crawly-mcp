@@ -6,7 +6,8 @@ import pytest
 from crawly_mcp.models import PageSearchResult
 from types import SimpleNamespace
 
-from crawly_mcp.errors import NavigationFailedError
+from crawly_mcp.errors import InvalidInputError, NavigationFailedError, URLSafetyError
+from crawly_mcp.models import PageSearchResponse
 from crawly_mcp.page_search import (
     AlgoliaHit,
     AlgoliaTier,
@@ -377,3 +378,114 @@ async def test_source_fetch_raises_navigation_failed_on_error() -> None:
     )
     with pytest.raises(NavigationFailedError):
         await service._fetch_source_html("https://example.com/")
+
+
+class _FakeTier:
+    def __init__(
+        self,
+        name: str,
+        *,
+        hit: object | None,
+        results: list[PageSearchResult],
+        raises: BaseException | None = None,
+    ) -> None:
+        self.name = name
+        self._hit = hit
+        self._results = results
+        self._raises = raises
+        self.execute_calls = 0
+
+    def detect(self, source_html: str, source_url: str):
+        del source_html, source_url
+        return self._hit
+
+    async def execute(self, hit, query: str) -> list[PageSearchResult]:
+        del hit, query
+        self.execute_calls += 1
+        if self._raises is not None:
+            raise self._raises
+        return self._results
+
+
+def _make_service_with_tiers(browser, tiers: list) -> PageSearchService:
+    service = PageSearchService(
+        browser_manager=browser, http_client_factory=lambda: httpx.AsyncClient()
+    )
+    service._tiers = tiers
+    return service
+
+
+@pytest.mark.asyncio
+async def test_cascade_first_tier_wins(_noop_ssrf_guard: None) -> None:
+    browser = _FakeBrowser(html="<html><body>src</body></html>")
+    algolia = _FakeTier("algolia", hit=object(), results=[PageSearchResult(snippet="A")])
+    opensearch = _FakeTier("opensearch", hit=None, results=[])
+    text = _FakeTier("text", hit=object(), results=[])
+    service = _make_service_with_tiers(browser, [algolia, opensearch, text])
+
+    response = await service.search(url="https://example.com/", query="q")
+
+    assert response.mode == "algolia"
+    assert response.attempted == ["algolia"]
+    assert len(response.results) == 1
+    assert opensearch.execute_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_cascade_skips_non_detected_tiers(_noop_ssrf_guard: None) -> None:
+    browser = _FakeBrowser(html="<html><body>src</body></html>")
+    algolia = _FakeTier("algolia", hit=None, results=[])
+    form = _FakeTier("form", hit=object(), results=[PageSearchResult(snippet="F")])
+    text = _FakeTier("text", hit=object(), results=[PageSearchResult(snippet="T")])
+    service = _make_service_with_tiers(browser, [algolia, form, text])
+
+    response = await service.search(url="https://example.com/", query="q")
+
+    assert response.mode == "form"
+    assert response.attempted == ["form"]
+
+
+@pytest.mark.asyncio
+async def test_cascade_continues_past_raising_tier(_noop_ssrf_guard: None) -> None:
+    browser = _FakeBrowser(html="<html><body>src</body></html>")
+    algolia = _FakeTier("algolia", hit=object(), results=[], raises=RuntimeError("boom"))
+    text = _FakeTier("text", hit=object(), results=[PageSearchResult(snippet="T")])
+    service = _make_service_with_tiers(browser, [algolia, text])
+
+    response = await service.search(url="https://example.com/", query="q")
+
+    assert response.mode == "text"
+    assert response.attempted == ["algolia", "text"]
+
+
+@pytest.mark.asyncio
+async def test_cascade_zero_results_from_text_still_valid(_noop_ssrf_guard: None) -> None:
+    browser = _FakeBrowser(html="<html><body>src</body></html>")
+    text = _FakeTier("text", hit=object(), results=[])
+    service = _make_service_with_tiers(browser, [text])
+
+    response = await service.search(url="https://example.com/", query="q")
+
+    assert response.mode == "text"
+    assert response.attempted == ["text"]
+    assert response.results == []
+
+
+@pytest.mark.asyncio
+async def test_search_rejects_empty_query() -> None:
+    browser = _FakeBrowser(html="")
+    service = PageSearchService(
+        browser_manager=browser, http_client_factory=lambda: httpx.AsyncClient()
+    )
+    with pytest.raises(InvalidInputError):
+        await service.search(url="https://example.com/", query="")
+
+
+@pytest.mark.asyncio
+async def test_search_ssrf_rejects_private_url() -> None:
+    browser = _FakeBrowser(html="")
+    service = PageSearchService(
+        browser_manager=browser, http_client_factory=lambda: httpx.AsyncClient()
+    )
+    with pytest.raises(URLSafetyError):
+        await service.search(url="http://127.0.0.1/", query="hello")
