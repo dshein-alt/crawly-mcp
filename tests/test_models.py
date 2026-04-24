@@ -99,7 +99,7 @@ def test_create_server_instructions_guide_silent_page_search_workflow() -> None:
 
     assert "Use tools silently" in instructions
     assert "`page_search(url, query)`" in instructions
-    assert "`fetch(..., content_format=\"text\")`" in instructions
+    assert '`fetch(..., content_format="text")`' in instructions
     assert "Final answers should be concise prose" in instructions
     assert "Do not claim a timeout" in instructions
 

@@ -108,12 +108,16 @@ def test_is_search_blocked_detects_duckduckgo_static_pages_redirect() -> None:
 
 
 def test_build_snippets_returns_empty_for_no_matches() -> None:
-    result = build_snippets("the quick brown fox", "zebra", max_matches=5, context_chars=60)
+    result = build_snippets(
+        "the quick brown fox", "zebra", max_matches=5, context_chars=60
+    )
     assert result == []
 
 
 def test_build_snippets_case_insensitive_match() -> None:
-    text = "First line.\nThe QUICK brown fox jumps.\nAnother line about something else.\n"
+    text = (
+        "First line.\nThe QUICK brown fox jumps.\nAnother line about something else.\n"
+    )
     snippets = build_snippets(text, "quick", max_matches=5, context_chars=40)
     assert len(snippets) == 1
     assert "quick" in snippets[0].lower()

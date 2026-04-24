@@ -105,9 +105,7 @@ class AlgoliaHit:
 class AlgoliaTier:
     name = "algolia"
 
-    def __init__(
-        self, *, http_client_factory: Callable[[], httpx.AsyncClient]
-    ) -> None:
+    def __init__(self, *, http_client_factory: Callable[[], httpx.AsyncClient]) -> None:
         self._client_factory = http_client_factory
 
     def detect(self, source_html: str, source_url: str) -> AlgoliaHit | None:
@@ -195,9 +193,7 @@ class OpenSearchTier:
             return None
         return OpenSearchHit(descriptor_url=href)
 
-    async def execute(
-        self, hit: OpenSearchHit, query: str
-    ) -> TierExecutionResult:
+    async def execute(self, hit: OpenSearchHit, query: str) -> TierExecutionResult:
         await URLSafetyGuard().validate_user_url(hit.descriptor_url)
         async with self._client_factory() as client:
             response = await client.get(
@@ -263,7 +259,9 @@ def _snippets_from_html(
         max_matches=MAX_SEARCH_RESULTS,
         context_chars=PAGE_SEARCH_SNIPPET_CONTEXT_CHARS,
     )
-    return [PageSearchResult(snippet=snippet, url=None, title=title) for snippet in snippets]
+    return [
+        PageSearchResult(snippet=snippet, url=None, title=title) for snippet in snippets
+    ]
 
 
 def _linked_results_from_search_html(
@@ -323,9 +321,7 @@ class ReadthedocsHit:
 class ReadthedocsTier:
     name = "readthedocs"
 
-    def __init__(
-        self, *, http_client_factory: Callable[[], httpx.AsyncClient]
-    ) -> None:
+    def __init__(self, *, http_client_factory: Callable[[], httpx.AsyncClient]) -> None:
         self._client_factory = http_client_factory
 
     def detect(self, source_html: str, source_url: str) -> ReadthedocsHit | None:
@@ -344,9 +340,7 @@ class ReadthedocsTier:
         version = segments[1]
         return ReadthedocsHit(project=slug, version=version)
 
-    async def execute(
-        self, hit: ReadthedocsHit, query: str
-    ) -> TierExecutionResult:
+    async def execute(self, hit: ReadthedocsHit, query: str) -> TierExecutionResult:
         await URLSafetyGuard().validate_user_url(_RTD_API)
         params = {"q": query, "project": hit.project, "version": hit.version}
         async with self._client_factory() as client:
@@ -482,7 +476,7 @@ class PageSearchService:
         markers = (
             "searchtools.js",
             'id="search-results"',
-            "id=\"search-documentation\"",
+            'id="search-documentation"',
         )
         return any(marker in html for marker in markers)
 
@@ -512,9 +506,7 @@ class PageSearchService:
 
         await URLSafetyGuard().validate_user_url(request.url)
 
-        logger.info(
-            "page_search entry url={!r} query={!r}", request.url, request.query
-        )
+        logger.info("page_search entry url={!r} query={!r}", request.url, request.query)
         started = asyncio.get_running_loop().time()
 
         try:
@@ -611,12 +603,9 @@ def _truncate_page_search_response(response: PageSearchResponse) -> PageSearchRe
 
     truncated = response.model_copy(update={"truncated": True})
     while (
-        truncated.results
-        and len(truncated.model_dump_json().encode("utf-8")) > limit
+        truncated.results and len(truncated.model_dump_json().encode("utf-8")) > limit
     ):
-        truncated = truncated.model_copy(
-            update={"results": truncated.results[:-1]}
-        )
+        truncated = truncated.model_copy(update={"results": truncated.results[:-1]})
 
     if len(truncated.model_dump_json().encode("utf-8")) > limit:
         logger.warning(

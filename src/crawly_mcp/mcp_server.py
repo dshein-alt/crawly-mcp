@@ -36,7 +36,7 @@ def create_server(
             "entrypoint, and `fetch` for browser-rendered page content. Use tools "
             "silently: do not narrate tool calls or internal reasoning. Prefer "
             "`page_search(url, query)` before broad `search` when the site is already "
-            "known. Prefer `fetch(..., content_format=\"text\")` when reading docs or "
+            'known. Prefer `fetch(..., content_format="text")` when reading docs or '
             "articles for a final prose answer. Final answers should be concise prose "
             "unless the user explicitly asks for JSON. Do not claim a timeout, fetch, "
             "or search failure unless the tool actually returned one."
@@ -62,7 +62,7 @@ def create_server(
         description=(
             "Fetch up to 5 URLs and return final browser-rendered page content per URL. "
             'Use `content_format="html"` for raw HTML or `content_format="text"` '
-            "for extracted readable text. Prefer `content_format=\"text\"` for docs, "
+            'for extracted readable text. Prefer `content_format="text"` for docs, '
             "articles, and final prose answers."
         ),
     )

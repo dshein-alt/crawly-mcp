@@ -240,17 +240,14 @@ async def test_opensearch_tier_execute_extracts_linked_search_results(
     result = outcome.results[0]
     assert result.title == "asyncio.Queue.qsize"
     assert result.url == (
-        "https://example.com/library/asyncio-queue.html"
-        "#asyncio.Queue.qsize"
+        "https://example.com/library/asyncio-queue.html#asyncio.Queue.qsize"
     )
     assert "Return the number" in result.snippet
 
 
 def test_readthedocs_tier_detect_parses_slug_and_version() -> None:
     tier = ReadthedocsTier(http_client_factory=httpx.AsyncClient)
-    hit = tier.detect(
-        "", "https://myproject.readthedocs.io/en/stable/guide/intro.html"
-    )
+    hit = tier.detect("", "https://myproject.readthedocs.io/en/stable/guide/intro.html")
     assert isinstance(hit, ReadthedocsHit)
     assert hit.project == "myproject"
     assert hit.version == "stable"
@@ -320,7 +317,9 @@ def test_form_tier_detect_returns_hit_when_form_present() -> None:
 
 def test_form_tier_detect_none_when_no_form() -> None:
     tier = FormTier(page_fetcher=_UnusedFetcher())
-    assert tier.detect("<html><body>nothing</body></html>", "https://example.com/") is None
+    assert (
+        tier.detect("<html><body>nothing</body></html>", "https://example.com/") is None
+    )
 
 
 @pytest.mark.asyncio
@@ -387,9 +386,7 @@ async def test_form_tier_execute_preserves_existing_action_query_params() -> Non
 
     tier = FormTier(page_fetcher=fake_fetch)
     hit = FormHit(
-        form=SearchFormHit(
-            action="https://example.com/s?lang=en", input_name="q"
-        )
+        form=SearchFormHit(action="https://example.com/s?lang=en", input_name="q")
     )
     await tier.execute(hit, "hello world")
 
@@ -508,7 +505,7 @@ async def test_source_fetch_waits_for_client_side_search_results() -> None:
         ),
         settled_html=(
             '<html><head><script src="_static/searchtools.js"></script></head>'
-            "<body><div id=\"search-results\">asyncio Queue qsize</div></body></html>"
+            '<body><div id="search-results">asyncio Queue qsize</div></body></html>'
         ),
     )
     service = PageSearchService(
@@ -574,7 +571,9 @@ def _make_service_with_tiers(browser, tiers: list) -> PageSearchService:
 @pytest.mark.asyncio
 async def test_cascade_first_tier_wins(_noop_ssrf_guard: None) -> None:
     browser = _FakeBrowser(html="<html><body>src</body></html>")
-    algolia = _FakeTier("algolia", hit=object(), results=[PageSearchResult(snippet="A")])
+    algolia = _FakeTier(
+        "algolia", hit=object(), results=[PageSearchResult(snippet="A")]
+    )
     opensearch = _FakeTier("opensearch", hit=None, results=[])
     text = _FakeTier("text", hit=object(), results=[])
     service = _make_service_with_tiers(browser, [algolia, opensearch, text])
@@ -626,7 +625,9 @@ async def test_cascade_preserves_results_url_from_winning_tier(
 @pytest.mark.asyncio
 async def test_cascade_continues_past_raising_tier(_noop_ssrf_guard: None) -> None:
     browser = _FakeBrowser(html="<html><body>src</body></html>")
-    algolia = _FakeTier("algolia", hit=object(), results=[], raises=RuntimeError("boom"))
+    algolia = _FakeTier(
+        "algolia", hit=object(), results=[], raises=RuntimeError("boom")
+    )
     text = _FakeTier("text", hit=object(), results=[PageSearchResult(snippet="T")])
     service = _make_service_with_tiers(browser, [algolia, text])
 
@@ -637,7 +638,9 @@ async def test_cascade_continues_past_raising_tier(_noop_ssrf_guard: None) -> No
 
 
 @pytest.mark.asyncio
-async def test_cascade_zero_results_from_text_still_valid(_noop_ssrf_guard: None) -> None:
+async def test_cascade_zero_results_from_text_still_valid(
+    _noop_ssrf_guard: None,
+) -> None:
     browser = _FakeBrowser(html="<html><body>src</body></html>")
     text = _FakeTier("text", hit=object(), results=[])
     service = _make_service_with_tiers(browser, [text])
