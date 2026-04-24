@@ -81,3 +81,7 @@ PROVIDER_HOMEPAGE: dict[SearchProvider, str] = {
     "google": "https://www.google.com/",
     "yandex": "https://yandex.ru/",
 }
+
+PageSearchMode = Literal["algolia", "opensearch", "readthedocs", "form", "text"]
+PAGE_SEARCH_TIER_TIMEOUT_SECONDS = 10
+PAGE_SEARCH_SNIPPET_CONTEXT_CHARS = 240

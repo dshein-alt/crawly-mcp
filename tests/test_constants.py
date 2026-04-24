@@ -1,4 +1,6 @@
 # tests/test_constants.py
+from typing import get_args
+
 from crawly_mcp import constants
 
 
@@ -48,3 +50,15 @@ def test_provider_homepages_present() -> None:
     assert constants.PROVIDER_HOMEPAGE["duckduckgo"] == "https://duckduckgo.com/"
     assert constants.PROVIDER_HOMEPAGE["google"] == "https://www.google.com/"
     assert constants.PROVIDER_HOMEPAGE["yandex"] == "https://yandex.ru/"
+
+
+def test_page_search_constants_exported() -> None:
+    assert constants.PAGE_SEARCH_TIER_TIMEOUT_SECONDS == 10
+    assert constants.PAGE_SEARCH_SNIPPET_CONTEXT_CHARS == 240
+    assert set(get_args(constants.PageSearchMode)) == {
+        "algolia",
+        "opensearch",
+        "readthedocs",
+        "form",
+        "text",
+    }
