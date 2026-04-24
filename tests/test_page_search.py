@@ -197,6 +197,55 @@ async def test_opensearch_tier_execute_substitutes_query_and_fetches_results(
     assert any("match" in r.snippet.lower() for r in outcome.results)
 
 
+@pytest.mark.asyncio
+async def test_opensearch_tier_execute_extracts_linked_search_results(
+    _noop_ssrf_guard: None,
+) -> None:
+    def _serve_descriptor(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(200, text=_OSD)
+
+    async def fake_fetch(url: str) -> str:
+        assert url == "https://example.com/search?q=asyncio%20Queue%20qsize&lang=en"
+        return """
+        <html><title>Search</title><body>
+          <div id="search-results">
+            <ul class="search">
+              <li>
+                <a href="library/asyncio-queue.html#asyncio.Queue.qsize">
+                  asyncio.Queue.qsize
+                </a>
+                <div class="context">
+                  Return the number of items in the queue.
+                </div>
+              </li>
+            </ul>
+          </div>
+        </body></html>
+        """
+
+    tier = OpenSearchTier(
+        http_client_factory=lambda: httpx.AsyncClient(
+            transport=httpx.MockTransport(_serve_descriptor)
+        ),
+        page_fetcher=fake_fetch,
+    )
+
+    outcome = await tier.execute(
+        OpenSearchHit(descriptor_url="https://example.com/osd.xml"),
+        "asyncio Queue qsize",
+    )
+
+    assert len(outcome.results) == 1
+    result = outcome.results[0]
+    assert result.title == "asyncio.Queue.qsize"
+    assert result.url == (
+        "https://example.com/library/asyncio-queue.html"
+        "#asyncio.Queue.qsize"
+    )
+    assert "Return the number" in result.snippet
+
+
 def test_readthedocs_tier_detect_parses_slug_and_version() -> None:
     tier = ReadthedocsTier(http_client_factory=httpx.AsyncClient)
     hit = tier.detect(
@@ -296,6 +345,39 @@ async def test_form_tier_execute_constructs_url_and_fetches() -> None:
 
 
 @pytest.mark.asyncio
+async def test_form_tier_execute_extracts_linked_search_results() -> None:
+    async def fake_fetch(url: str) -> str:
+        assert url == "https://docs.example.com/search.html?q=queue+size"
+        return """
+        <html><body>
+          <div id="search-results">
+            <p>
+              <a href="library/queues.html#qsize">Queue.qsize</a>
+              Return the number of items in the queue.
+            </p>
+          </div>
+        </body></html>
+        """
+
+    tier = FormTier(page_fetcher=fake_fetch)
+    hit = FormHit(
+        form=SearchFormHit(
+            action="https://docs.example.com/search.html",
+            input_name="q",
+        )
+    )
+
+    outcome = await tier.execute(hit, "queue size")
+
+    assert len(outcome.results) == 1
+    assert outcome.results_url == "https://docs.example.com/search.html?q=queue+size"
+    assert outcome.results[0].url == (
+        "https://docs.example.com/library/queues.html#qsize"
+    )
+    assert outcome.results[0].title == "Queue.qsize"
+
+
+@pytest.mark.asyncio
 async def test_form_tier_execute_preserves_existing_action_query_params() -> None:
     captured: list[str] = []
 
@@ -337,21 +419,29 @@ async def test_form_tier_execute_preserves_parameter_name_case() -> None:
 
 class _FakeBrowser:
     def __init__(
-        self, *, html: str, navigate_raises: BaseException | None = None
+        self,
+        *,
+        html: str,
+        settled_html: str | None = None,
+        navigate_raises: BaseException | None = None,
     ) -> None:
         self._html = html
+        self._settled_html = settled_html if settled_html is not None else html
         self._navigate_raises = navigate_raises
         self.close_calls = 0
+        self.wait_for_function_calls = 0
+        self.wait_for_load_state_calls = 0
 
-    async def new_context(self):
+    async def new_context(self):  # noqa: C901 - fake Playwright surface for tests
         outer = self
 
         class _Ctx:
             async def new_page(self):
                 del self
+                settled = False
 
                 async def content() -> str:
-                    return outer._html
+                    return outer._settled_html if settled else outer._html
 
                 async def close() -> None:
                     return None
@@ -361,6 +451,16 @@ class _FakeBrowser:
                     if outer._navigate_raises is not None:
                         raise outer._navigate_raises
 
+                async def wait_for_function(expression, timeout):
+                    del expression, timeout
+                    nonlocal settled
+                    outer.wait_for_function_calls += 1
+                    settled = True
+
+                async def wait_for_load_state(state, timeout):
+                    del state, timeout
+                    outer.wait_for_load_state_calls += 1
+
                 async def route(pattern, handler):
                     del pattern, handler
 
@@ -368,6 +468,8 @@ class _FakeBrowser:
                     content=content,
                     close=close,
                     goto=goto,
+                    wait_for_function=wait_for_function,
+                    wait_for_load_state=wait_for_load_state,
                     route=route,
                     url="",
                 )
@@ -395,6 +497,31 @@ async def test_source_fetch_returns_html() -> None:
     html = await service._fetch_source_html("https://example.com/")
     assert "hello" in html
     assert browser.close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_source_fetch_waits_for_client_side_search_results() -> None:
+    browser = _FakeBrowser(
+        html=(
+            '<html><head><script src="_static/searchtools.js"></script></head>'
+            '<body><div id="search-results"></div></body></html>'
+        ),
+        settled_html=(
+            '<html><head><script src="_static/searchtools.js"></script></head>'
+            "<body><div id=\"search-results\">asyncio Queue qsize</div></body></html>"
+        ),
+    )
+    service = PageSearchService(
+        browser_manager=browser, http_client_factory=httpx.AsyncClient
+    )
+
+    html = await service._fetch_source_html(
+        "https://docs.python.org/3/search.html?q=asyncio+Queue+qsize"
+    )
+
+    assert "asyncio Queue qsize" in html
+    assert browser.wait_for_function_calls == 1
+    assert browser.wait_for_load_state_calls == 0
 
 
 @pytest.mark.asyncio

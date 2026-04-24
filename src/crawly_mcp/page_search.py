@@ -7,7 +7,15 @@ from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import Protocol
-from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlsplit, urlunsplit
+from urllib.parse import (
+    parse_qsl,
+    quote,
+    urlencode,
+    urljoin,
+    urlparse,
+    urlsplit,
+    urlunsplit,
+)
 
 import httpx
 from bs4 import BeautifulSoup
@@ -45,6 +53,8 @@ from crawly_mcp.parsing import (
 )
 from crawly_mcp.security import URLSafetyGuard
 from crawly_mcp.service import extract_readable_text, resolve_fetch_max_size
+
+_CLIENT_SEARCH_SETTLE_TIMEOUT_MS = 2_000
 
 
 @dataclass(frozen=True)
@@ -200,7 +210,7 @@ class OpenSearchTier:
         results_url = self._substitute(template, query)
         html = await self._fetch_page(results_url)
         return TierExecutionResult(
-            results=_snippets_from_html(html, query),
+            results=_snippets_from_html(html, query, base_url=results_url),
             results_url=results_url,
         )
 
@@ -236,8 +246,14 @@ class OpenSearchTier:
 def _snippets_from_html(
     html: str,
     query: str,
+    *,
+    base_url: str | None = None,
 ) -> list[PageSearchResult]:
     soup = BeautifulSoup(html, "html.parser")
+    linked_results = _linked_results_from_search_html(soup, base_url=base_url)
+    if linked_results:
+        return linked_results
+
     title_tag = soup.title
     title = title_tag.string.strip() if title_tag and title_tag.string else None
     text = extract_readable_text(html)
@@ -248,6 +264,50 @@ def _snippets_from_html(
         context_chars=PAGE_SEARCH_SNIPPET_CONTEXT_CHARS,
     )
     return [PageSearchResult(snippet=snippet, url=None, title=title) for snippet in snippets]
+
+
+def _linked_results_from_search_html(
+    soup: BeautifulSoup,
+    *,
+    base_url: str | None,
+) -> list[PageSearchResult]:
+    containers = list(soup.select("#search-results, .search-results, main"))
+    if not containers:
+        containers = [soup]
+
+    results: list[PageSearchResult] = []
+    seen_urls: set[str] = set()
+    for container in containers:
+        for anchor in container.select("a[href]"):
+            raw_href = (anchor.get("href") or "").strip()
+            if not raw_href or raw_href.startswith(("#", "javascript:", "mailto:")):
+                continue
+            url = urljoin(base_url, raw_href) if base_url else raw_href
+            if url in seen_urls:
+                continue
+            title = anchor.get_text(" ", strip=True)
+            snippet = _result_snippet(anchor)
+            if not title and not snippet:
+                continue
+            seen_urls.add(url)
+            results.append(
+                PageSearchResult(
+                    snippet=snippet or title,
+                    url=url,
+                    title=title or None,
+                )
+            )
+            if len(results) >= MAX_SEARCH_RESULTS:
+                return results
+    return results
+
+
+def _result_snippet(anchor) -> str:
+    result_root = anchor.find_parent(["li", "article", "div"]) or anchor.parent
+    if result_root is None:
+        return anchor.get_text(" ", strip=True)
+    text = result_root.get_text(" ", strip=True)
+    return re.sub(r"\s+", " ", text)
 
 
 _RTD_API = "https://readthedocs.org/api/v2/search/"
@@ -345,7 +405,7 @@ class FormTier:
         results_url = self._append_query(hit.form.action, hit.form.input_name, query)
         html = await self._fetch_page(results_url)
         return TierExecutionResult(
-            results=_snippets_from_html(html, query),
+            results=_snippets_from_html(html, query, base_url=results_url),
             results_url=results_url,
         )
 
@@ -396,16 +456,53 @@ class PageSearchService:
                 await self._browser_manager.goto(
                     page, url, timeout_ms=FETCH_PAGE_TIMEOUT_SECONDS * 1000
                 )
-                return await page.content()
+                html = await page.content()
+                if self._looks_like_client_search_shell(html, url):
+                    await self._settle_client_search_page(page)
+                    html = await page.content()
             except PlaywrightTimeoutError as exc:
                 raise NavigationFailedError(f"source fetch timed out: {exc}") from exc
             except PlaywrightError as exc:
                 raise NavigationFailedError(f"source fetch failed: {exc}") from exc
+            else:
+                return html
             finally:
                 with suppress(Exception):
                     await page.close()
         finally:
             await browser_context.close()
+
+    @staticmethod
+    def _looks_like_client_search_shell(html: str, url: str) -> bool:
+        parsed = urlparse(url)
+        if not parse_qsl(parsed.query, keep_blank_values=True):
+            return False
+        if "search" not in parsed.path.lower():
+            return False
+        markers = (
+            "searchtools.js",
+            'id="search-results"',
+            "id=\"search-documentation\"",
+        )
+        return any(marker in html for marker in markers)
+
+    @staticmethod
+    async def _settle_client_search_page(page) -> None:
+        with suppress(PlaywrightTimeoutError, PlaywrightError):
+            await page.wait_for_function(
+                """
+                () => {
+                    const container = document.querySelector('#search-results');
+                    return !!container && container.innerText.trim().length > 0;
+                }
+                """,
+                timeout=_CLIENT_SEARCH_SETTLE_TIMEOUT_MS,
+            )
+            return
+        with suppress(PlaywrightTimeoutError, PlaywrightError):
+            await page.wait_for_load_state(
+                "networkidle", timeout=_CLIENT_SEARCH_SETTLE_TIMEOUT_MS
+            )
 
     async def search(self, *, url: str, query: str) -> PageSearchResponse:
         try:
