@@ -1,10 +1,12 @@
 from pathlib import Path
 
 from crawly_mcp.parsing import (
+    SearchFormHit,
     build_search_url,
     build_snippets,
     detect_algolia_config,
     detect_opensearch_href,
+    detect_search_form,
     extract_search_results,
     is_search_blocked,
     normalize_result_url,
@@ -213,3 +215,52 @@ def test_detect_opensearch_href_missing() -> None:
 def test_detect_opensearch_href_wrong_type_ignored() -> None:
     html = """<link rel="search" type="application/rss+xml" href="/rss.xml">"""
     assert detect_opensearch_href(html, base_url="https://example.com/") is None
+
+
+def test_detect_search_form_role_search_priority() -> None:
+    html = """
+    <form action="/fallback" method="get"><input name="q"></form>
+    <form role="search" action="/s" method="get"><input name="query"></form>
+    """
+    hit = detect_search_form(html, base_url="https://example.com/")
+    assert hit is not None
+    assert hit.action == "https://example.com/s"
+    assert hit.input_name == "query"
+
+
+def test_detect_search_form_input_type_search() -> None:
+    html = """<form action="/go" method="get"><input type="search" name="s"></form>"""
+    hit = detect_search_form(html, base_url="https://example.com/")
+    assert hit is not None
+    assert hit.input_name == "s"
+
+
+def test_detect_search_form_input_name_fallback() -> None:
+    html = """<form action="/do" method="get"><input name="query" type="text"></form>"""
+    hit = detect_search_form(html, base_url="https://example.com/")
+    assert hit is not None
+    assert hit.input_name == "query"
+
+
+def test_detect_search_form_skips_post_forms() -> None:
+    html = """<form action="/s" method="POST"><input name="q"></form>"""
+    assert detect_search_form(html, base_url="https://example.com/") is None
+
+
+def test_detect_search_form_empty_action_resolves_to_source_url() -> None:
+    html = """<form method="get"><input name="q"></form>"""
+    hit = detect_search_form(html, base_url="https://example.com/docs/page.html")
+    assert hit is not None
+    assert hit.action == "https://example.com/docs/page.html"
+    assert hit.input_name == "q"
+
+
+def test_detect_search_form_relative_action_resolved() -> None:
+    html = """<form action="search.html" method="get"><input name="q"></form>"""
+    hit = detect_search_form(html, base_url="https://example.com/docs/")
+    assert hit is not None
+    assert hit.action == "https://example.com/docs/search.html"
+
+
+def test_search_form_hit_type_available() -> None:
+    assert SearchFormHit is not None

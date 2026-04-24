@@ -3,6 +3,7 @@ from __future__ import annotations
 import json as _json
 import re
 from collections.abc import Iterable
+from dataclasses import dataclass
 from urllib.parse import parse_qs, quote_plus, unquote, urljoin, urlsplit
 
 from bs4 import BeautifulSoup
@@ -245,6 +246,80 @@ def _scan_algolia_inline(html: str) -> dict[str, str] | None:
         found[match.group("key")] = match.group("val")
         if _has_algolia_keys(found):
             return _algolia_subset(found)
+    return None
+
+
+_SEARCH_INPUT_NAMES = ("q", "query", "search", "s")
+
+
+@dataclass(frozen=True)
+class SearchFormHit:
+    action: str
+    input_name: str
+
+
+def detect_search_form(html: str, *, base_url: str) -> SearchFormHit | None:
+    soup = BeautifulSoup(html, "html.parser")
+    candidates = (
+        _match_role_search,
+        _match_input_type_search,
+        _match_input_name_fallback,
+    )
+    for matcher in candidates:
+        hit = matcher(soup, base_url)
+        if hit is not None:
+            return hit
+    return None
+
+
+def _iter_get_forms(soup: BeautifulSoup):
+    for form in soup.find_all("form"):
+        method = (form.get("method") or "get").lower()
+        if method != "get":
+            continue
+        action = (form.get("action") or "").strip()
+        yield form, action
+
+
+def _hit_for(action: str, base_url: str, input_name: str) -> SearchFormHit:
+    return SearchFormHit(action=urljoin(base_url, action), input_name=input_name)
+
+
+def _first_named_input(form) -> str | None:
+    for inp in form.find_all("input"):
+        name = (inp.get("name") or "").strip()
+        if name:
+            return name
+    return None
+
+
+def _match_role_search(soup, base_url: str) -> SearchFormHit | None:
+    for form, action in _iter_get_forms(soup):
+        if (form.get("role") or "").lower() != "search":
+            continue
+        name = _first_named_input(form)
+        if name:
+            return _hit_for(action, base_url, name)
+    return None
+
+
+def _match_input_type_search(soup, base_url: str) -> SearchFormHit | None:
+    for form, action in _iter_get_forms(soup):
+        for inp in form.find_all("input"):
+            if (inp.get("type") or "").lower() != "search":
+                continue
+            name = (inp.get("name") or "").strip()
+            if name:
+                return _hit_for(action, base_url, name)
+    return None
+
+
+def _match_input_name_fallback(soup, base_url: str) -> SearchFormHit | None:
+    for form, action in _iter_get_forms(soup):
+        for inp in form.find_all("input"):
+            name = (inp.get("name") or "").strip().lower()
+            if name in _SEARCH_INPUT_NAMES:
+                return _hit_for(action, base_url, name)
     return None
 
 
