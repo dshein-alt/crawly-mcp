@@ -9,6 +9,7 @@ from crawly_mcp.constants import (
     DEFAULT_PROVIDER,
     MAX_FETCH_URLS,
     FetchContentFormat,
+    PageSearchMode,
     SearchProvider,
 )
 
@@ -69,3 +70,39 @@ class FetchResponse(BaseModel):
     pages: dict[str, str] = Field(default_factory=dict)
     errors: dict[str, FetchError] = Field(default_factory=dict)
     truncated: list[str] = Field(default_factory=list)
+
+
+class PageSearchRequest(BaseModel):
+    url: str
+    query: str
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("url")
+    @classmethod
+    def _url_non_empty(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("url must be a non-empty string")
+        return value
+
+    @field_validator("query")
+    @classmethod
+    def _query_non_empty(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("query must be a non-empty string")
+        return value
+
+
+class PageSearchResult(BaseModel):
+    snippet: str
+    url: str | None = None
+    title: str | None = None
+
+
+class PageSearchResponse(BaseModel):
+    mode: PageSearchMode
+    attempted: list[PageSearchMode]
+    source_url: str
+    results_url: str | None = None
+    results: list[PageSearchResult] = Field(default_factory=list)
+    truncated: bool = False

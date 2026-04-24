@@ -4,7 +4,13 @@ from pydantic import ValidationError
 
 from crawly_mcp.constants import ALLOWED_PROVIDERS
 from crawly_mcp.mcp_server import create_server
-from crawly_mcp.models import FetchRequest, SearchRequest
+from crawly_mcp.models import (
+    FetchRequest,
+    PageSearchRequest,
+    PageSearchResponse,
+    PageSearchResult,
+    SearchRequest,
+)
 from crawly_mcp.version import get_package_version
 
 
@@ -84,3 +90,48 @@ def test_create_server_reports_package_version() -> None:
 
     assert init_options.server_name == "crawly"
     assert init_options.server_version == get_package_version()
+
+
+def test_page_search_request_requires_non_empty_query() -> None:
+    try:
+        PageSearchRequest(url="https://example.com", query="")
+    except ValidationError as exc:
+        assert "query" in str(exc)
+    else:
+        raise AssertionError("expected ValidationError")
+
+
+def test_page_search_request_requires_non_empty_url() -> None:
+    try:
+        PageSearchRequest(url="", query="hello")
+    except ValidationError as exc:
+        assert "url" in str(exc)
+    else:
+        raise AssertionError("expected ValidationError")
+
+
+def test_page_search_response_defaults() -> None:
+    response = PageSearchResponse(
+        mode="text",
+        attempted=["text"],
+        source_url="https://example.com",
+        results_url=None,
+        results=[],
+        truncated=False,
+    )
+    assert response.mode == "text"
+    assert response.results == []
+    assert response.truncated is False
+
+
+def test_page_search_result_allows_missing_url_and_title() -> None:
+    result = PageSearchResult(snippet="hello world", url=None, title=None)
+    assert result.snippet == "hello world"
+    assert result.url is None
+    assert result.title is None
+
+
+def test_page_search_request_schema_advertises_query_and_url() -> None:
+    schema = PageSearchRequest.model_json_schema()
+    assert {"url", "query"}.issubset(schema["properties"].keys())
+    assert schema["additionalProperties"] is False
