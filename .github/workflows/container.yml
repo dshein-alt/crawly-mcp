@@ -142,7 +142,29 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Prepare registry targets
+        id: registries
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          dockerhub_enabled=false
+          if [[ -n "${DOCKERHUB_USERNAME}" && -n "${DOCKERHUB_TOKEN}" ]]; then
+            dockerhub_enabled=true
+          fi
+
+          {
+            echo "dockerhub_enabled=${dockerhub_enabled}"
+            echo "images<<EOF"
+            echo "ghcr.io/${{ github.repository_owner }}/crawly-mcp"
+            if [[ "${dockerhub_enabled}" == "true" ]]; then
+              echo "${DOCKERHUB_USERNAME}/crawly-mcp"
+            fi
+            echo "EOF"
+          } >> "${GITHUB_OUTPUT}"
+
       - name: Log in to Docker Hub
+        if: steps.registries.outputs.dockerhub_enabled == 'true'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -152,9 +174,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: |
-            ghcr.io/${{ github.repository_owner }}/crawly-mcp
-            ${{ vars.DOCKERHUB_NAMESPACE }}/crawly-mcp
+          images: ${{ steps.registries.outputs.images }}
           tags: |
             type=raw,value=${{ needs.classify.outputs.version }}
             type=raw,value=${{ needs.classify.outputs.major_minor }}
