@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-import httpx
-import pytest
-
-from crawly_mcp.models import PageSearchResult
 from types import SimpleNamespace
 
+import httpx
+import pytest
+from patchright.async_api import Error as PlaywrightError
+
 from crawly_mcp.errors import InvalidInputError, NavigationFailedError, URLSafetyError
-from crawly_mcp.models import PageSearchResponse
+from crawly_mcp.models import PageSearchResponse, PageSearchResult
 from crawly_mcp.page_search import (
     AlgoliaHit,
     AlgoliaTier,
@@ -79,7 +79,7 @@ def test_algolia_tier_detect_returns_config_when_present() -> None:
       docsearch({ appId: "APP", apiKey: "KEY", indexName: "docs" });
     </script>
     """
-    tier = AlgoliaTier(http_client_factory=lambda: httpx.AsyncClient())
+    tier = AlgoliaTier(http_client_factory=httpx.AsyncClient)
     hit = tier.detect(html, "https://example.com/")
     assert isinstance(hit, AlgoliaHit)
     assert hit.app_id == "APP"
@@ -88,7 +88,7 @@ def test_algolia_tier_detect_returns_config_when_present() -> None:
 
 
 def test_algolia_tier_detect_none_when_absent() -> None:
-    tier = AlgoliaTier(http_client_factory=lambda: httpx.AsyncClient())
+    tier = AlgoliaTier(http_client_factory=httpx.AsyncClient)
     assert (
         tier.detect("<html><body>no docsearch</body></html>", "https://example.com/")
         is None
@@ -149,7 +149,7 @@ class _UnusedFetcher:
 def test_opensearch_tier_detect_returns_href_when_link_present() -> None:
     html = """<link rel="search" type="application/opensearchdescription+xml" href="/osd.xml">"""
     tier = OpenSearchTier(
-        http_client_factory=lambda: httpx.AsyncClient(),
+        http_client_factory=httpx.AsyncClient,
         page_fetcher=_UnusedFetcher(),
     )
     hit = tier.detect(html, "https://example.com/")
@@ -161,9 +161,11 @@ def test_opensearch_tier_detect_returns_href_when_link_present() -> None:
 async def test_opensearch_tier_execute_substitutes_query_and_fetches_results(
     _noop_ssrf_guard: None,
 ) -> None:
-    descriptor_transport = httpx.MockTransport(
-        lambda req: httpx.Response(200, text=_OSD)
-    )
+    def _serve_descriptor(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(200, text=_OSD)
+
+    descriptor_transport = httpx.MockTransport(_serve_descriptor)
     captured: list[str] = []
 
     async def fake_fetch(url: str) -> str:
@@ -191,7 +193,7 @@ async def test_opensearch_tier_execute_substitutes_query_and_fetches_results(
 
 
 def test_readthedocs_tier_detect_parses_slug_and_version() -> None:
-    tier = ReadthedocsTier(http_client_factory=lambda: httpx.AsyncClient())
+    tier = ReadthedocsTier(http_client_factory=httpx.AsyncClient)
     hit = tier.detect(
         "", "https://myproject.readthedocs.io/en/stable/guide/intro.html"
     )
@@ -201,12 +203,12 @@ def test_readthedocs_tier_detect_parses_slug_and_version() -> None:
 
 
 def test_readthedocs_tier_detect_skips_root_path() -> None:
-    tier = ReadthedocsTier(http_client_factory=lambda: httpx.AsyncClient())
+    tier = ReadthedocsTier(http_client_factory=httpx.AsyncClient)
     assert tier.detect("", "https://myproject.readthedocs.io/") is None
 
 
 def test_readthedocs_tier_detect_skips_non_readthedocs_host() -> None:
-    tier = ReadthedocsTier(http_client_factory=lambda: httpx.AsyncClient())
+    tier = ReadthedocsTier(http_client_factory=httpx.AsyncClient)
     assert tier.detect("", "https://example.com/en/stable/page.html") is None
 
 
@@ -319,8 +321,8 @@ class _FakeBrowser:
         outer = self
 
         class _Ctx:
-            async def new_page(self_inner):
-                del self_inner
+            async def new_page(self):
+                del self
 
                 async def content() -> str:
                     return outer._html
@@ -344,12 +346,12 @@ class _FakeBrowser:
                     url="",
                 )
 
-            async def close(self_inner):
-                del self_inner
+            async def close(self):
+                del self
                 outer.close_calls += 1
 
-            async def route(self_inner, pattern, handler):
-                del self_inner, pattern, handler
+            async def route(self, pattern, handler):
+                del self, pattern, handler
 
         return _Ctx()
 
@@ -362,7 +364,7 @@ class _FakeBrowser:
 async def test_source_fetch_returns_html() -> None:
     browser = _FakeBrowser(html="<html><body>hello</body></html>")
     service = PageSearchService(
-        browser_manager=browser, http_client_factory=lambda: httpx.AsyncClient()
+        browser_manager=browser, http_client_factory=httpx.AsyncClient
     )
     html = await service._fetch_source_html("https://example.com/")
     assert "hello" in html
@@ -371,11 +373,9 @@ async def test_source_fetch_returns_html() -> None:
 
 @pytest.mark.asyncio
 async def test_source_fetch_raises_navigation_failed_on_error() -> None:
-    from patchright.async_api import Error as PlaywrightError
-
     browser = _FakeBrowser(html="", navigate_raises=PlaywrightError("nope"))
     service = PageSearchService(
-        browser_manager=browser, http_client_factory=lambda: httpx.AsyncClient()
+        browser_manager=browser, http_client_factory=httpx.AsyncClient
     )
     with pytest.raises(NavigationFailedError):
         await service._fetch_source_html("https://example.com/")
@@ -410,7 +410,7 @@ class _FakeTier:
 
 def _make_service_with_tiers(browser, tiers: list) -> PageSearchService:
     service = PageSearchService(
-        browser_manager=browser, http_client_factory=lambda: httpx.AsyncClient()
+        browser_manager=browser, http_client_factory=httpx.AsyncClient
     )
     service._tiers = tiers
     return service
@@ -476,7 +476,7 @@ async def test_cascade_zero_results_from_text_still_valid(_noop_ssrf_guard: None
 async def test_search_rejects_empty_query() -> None:
     browser = _FakeBrowser(html="")
     service = PageSearchService(
-        browser_manager=browser, http_client_factory=lambda: httpx.AsyncClient()
+        browser_manager=browser, http_client_factory=httpx.AsyncClient
     )
     with pytest.raises(InvalidInputError):
         await service.search(url="https://example.com/", query="")
@@ -486,7 +486,7 @@ async def test_search_rejects_empty_query() -> None:
 async def test_search_ssrf_rejects_private_url() -> None:
     browser = _FakeBrowser(html="")
     service = PageSearchService(
-        browser_manager=browser, http_client_factory=lambda: httpx.AsyncClient()
+        browser_manager=browser, http_client_factory=httpx.AsyncClient
     )
     with pytest.raises(URLSafetyError):
         await service.search(url="http://127.0.0.1/", query="hello")

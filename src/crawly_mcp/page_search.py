@@ -57,6 +57,7 @@ class TextTier:
     name = "text"
 
     def detect(self, source_html: str, source_url: str) -> TextHit:
+        del source_url
         soup = BeautifulSoup(source_html, "html.parser")
         title_tag = soup.title
         title = title_tag.string.strip() if title_tag and title_tag.string else None
@@ -92,6 +93,7 @@ class AlgoliaTier:
         self._client_factory = http_client_factory
 
     def detect(self, source_html: str, source_url: str) -> AlgoliaHit | None:
+        del source_url
         config = detect_algolia_config(source_html)
         if config is None:
             return None
@@ -139,7 +141,7 @@ class AlgoliaTier:
         return PageSearchResult(
             snippet=snippet,
             url=raw.get("url"),
-            title=" › ".join(title_parts) if title_parts else None,
+            title=" > ".join(title_parts) if title_parts else None,
         )
 
 
@@ -192,7 +194,7 @@ class OpenSearchTier:
     @staticmethod
     def _first_html_template(xml_text: str) -> str | None:
         try:
-            root = ET.fromstring(xml_text)
+            root = ET.fromstring(xml_text)  # noqa: S314 - descriptors are small and fetched from origin under tier timeout
         except ET.ParseError:
             return None
         for url in root.findall(f"{_OSD_NS}Url"):
@@ -263,11 +265,11 @@ class ReadthedocsTier:
         if not any(host.endswith(suffix) for suffix in _RTD_HOSTS):
             return None
         parts = host.split(".")
-        if len(parts) < 3 or not parts[0]:
+        if len(parts) < 3 or not parts[0]:  # noqa: PLR2004 - subdomain + rtd apex (two labels)
             return None
         slug = parts[0]
         segments = [s for s in parsed.path.split("/") if s]
-        if len(segments) < 2:
+        if len(segments) < 2:  # noqa: PLR2004 - /<lang>/<version>/ prefix is two segments
             return None
         version = segments[1]
         return ReadthedocsHit(project=slug, version=version)
@@ -422,7 +424,7 @@ class PageSearchService:
                             tier.execute(hit, request.query),
                             PAGE_SEARCH_TIER_TIMEOUT_SECONDS,
                         )
-                    except asyncio.TimeoutError:
+                    except TimeoutError:
                         logger.warning("page_search tier={} timed out", tier.name)
                         continue
                     except Exception as exc:
@@ -453,7 +455,7 @@ class PageSearchService:
                     results_url=None,
                     results=text_results,
                 )
-        except asyncio.TimeoutError as exc:
+        except TimeoutError as exc:
             raise TimeoutExceededError(
                 "page_search exceeded the overall timeout"
             ) from exc

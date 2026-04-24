@@ -135,3 +135,18 @@ def test_page_search_request_schema_advertises_query_and_url() -> None:
     schema = PageSearchRequest.model_json_schema()
     assert {"url", "query"}.issubset(schema["properties"].keys())
     assert schema["additionalProperties"] is False
+
+
+def test_page_search_tool_schema_advertises_required_fields() -> None:
+    async def _run() -> dict:
+        server = create_server()
+        tools = await server.list_tools()
+        for tool in tools:
+            if tool.name == "page_search":
+                return tool.inputSchema
+        raise AssertionError("page_search tool missing from list_tools()")
+
+    schema = asyncio.run(_run())
+    assert set(schema["required"]) == {"url", "query"}
+    assert schema["properties"]["url"]["type"] == "string"
+    assert schema["properties"]["query"]["type"] == "string"

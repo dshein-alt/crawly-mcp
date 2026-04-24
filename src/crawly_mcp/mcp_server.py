@@ -7,7 +7,8 @@ from mcp.server.fastmcp import FastMCP
 from crawly_mcp.browser import BrowserManager
 from crawly_mcp.constants import DEFAULT_MCP_HOST, DEFAULT_MCP_PORT, FetchContentFormat
 from crawly_mcp.errors import WebSearchError
-from crawly_mcp.models import FetchResponse, SearchResponse
+from crawly_mcp.models import FetchResponse, PageSearchResponse, SearchResponse
+from crawly_mcp.page_search import PageSearchService
 from crawly_mcp.service import WebSearchService
 from crawly_mcp.version import get_package_version
 
@@ -17,6 +18,7 @@ def create_server(
 ) -> FastMCP:
     browser_manager = BrowserManager()
     service = WebSearchService(browser_manager)
+    page_search_service = PageSearchService(browser_manager)
 
     @asynccontextmanager
     async def lifespan(_: FastMCP):
@@ -64,6 +66,21 @@ def create_server(
     ) -> FetchResponse:
         try:
             return await service.fetch(urls=urls, content_format=content_format)
+        except WebSearchError as exc:
+            raise exc.to_mcp_error() from exc
+
+    @server.tool(
+        name="page_search",
+        description=(
+            "Search for content on a single page using a three-tier cascade: "
+            "known site-search facilities (Algolia DocSearch, OpenSearch, "
+            "Readthedocs) first, then generic GET form detection, then "
+            "find-in-page text fallback."
+        ),
+    )
+    async def page_search(url: str, query: str) -> PageSearchResponse:
+        try:
+            return await page_search_service.search(url=url, query=query)
         except WebSearchError as exc:
             raise exc.to_mcp_error() from exc
 
