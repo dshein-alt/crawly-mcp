@@ -2,6 +2,7 @@ from pathlib import Path
 
 from crawly_mcp.parsing import (
     build_search_url,
+    build_snippets,
     extract_search_results,
     is_search_blocked,
     normalize_result_url,
@@ -100,3 +101,40 @@ def test_is_search_blocked_detects_duckduckgo_static_pages_redirect() -> None:
     html = "<html><body>Something went wrong.</body></html>"
 
     assert is_search_blocked("duckduckgo", url, "DuckDuckGo", html) is True
+
+
+def test_build_snippets_returns_empty_for_no_matches() -> None:
+    result = build_snippets("the quick brown fox", "zebra", max_matches=5, context_chars=60)
+    assert result == []
+
+
+def test_build_snippets_case_insensitive_match() -> None:
+    text = "First line.\nThe QUICK brown fox jumps.\nAnother line about something else.\n"
+    snippets = build_snippets(text, "quick", max_matches=5, context_chars=40)
+    assert len(snippets) == 1
+    assert "quick" in snippets[0].lower()
+
+
+def test_build_snippets_word_boundary_filters_substring_hits() -> None:
+    text = "the keyboard has a spacer between keys"
+    snippets = build_snippets(text, "space", max_matches=5, context_chars=50)
+    assert snippets == []
+
+
+def test_build_snippets_deduplicates_identical_snippets() -> None:
+    text = "alpha beta\nalpha beta\nalpha beta\n"
+    snippets = build_snippets(text, "alpha", max_matches=5, context_chars=50)
+    assert len(snippets) == 1
+
+
+def test_build_snippets_caps_at_max_matches() -> None:
+    text = "\n".join(f"line {i} with target inside" for i in range(10))
+    snippets = build_snippets(text, "target", max_matches=3, context_chars=40)
+    assert len(snippets) == 3
+
+
+def test_build_snippets_bounds_each_snippet_length() -> None:
+    text = "before " * 500 + " target " + "after " * 500
+    snippets = build_snippets(text, "target", max_matches=1, context_chars=100)
+    assert len(snippets) == 1
+    assert len(snippets[0]) <= 140

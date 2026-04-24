@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 from urllib.parse import parse_qs, quote_plus, unquote, urljoin, urlsplit
 
@@ -151,3 +152,54 @@ def _first(values: Iterable[str] | None) -> str | None:
         if value:
             return value
     return None
+
+
+def build_snippets(
+    text: str,
+    query: str,
+    *,
+    max_matches: int,
+    context_chars: int,
+) -> list[str]:
+    query_stripped = query.strip()
+    if not query_stripped:
+        return []
+
+    pattern = _word_boundary_pattern(query_stripped)
+    half = max(context_chars // 2, 20)
+
+    snippets: list[str] = []
+    seen: set[str] = set()
+
+    for match in pattern.finditer(text):
+        if len(snippets) >= max_matches:
+            break
+        start = max(0, match.start() - half)
+        end = min(len(text), match.end() + half)
+
+        while (
+            start > 0
+            and not text[start - 1].isspace()
+            and match.start() - start < half + 10
+        ):
+            start -= 1
+        while (
+            end < len(text)
+            and not text[end].isspace()
+            and end - match.end() < half + 10
+        ):
+            end += 1
+
+        raw = text[start:end].strip()
+        normalized = re.sub(r"\s+", " ", raw)
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            snippets.append(normalized)
+
+    return snippets
+
+
+def _word_boundary_pattern(query: str) -> re.Pattern[str]:
+    left = r"\b" if query[0].isalnum() else ""
+    right = r"\b" if query[-1].isalnum() else ""
+    return re.compile(f"{left}{re.escape(query)}{right}", re.IGNORECASE)
