@@ -4,7 +4,7 @@ WORKDIR /app
 
 RUN python -m pip install --no-cache-dir uv
 
-COPY pyproject.toml uv.lock README.md /app/
+COPY pyproject.toml uv.lock README.md LICENSE /app/
 COPY src /app/src
 RUN uv sync --frozen --no-dev
 
