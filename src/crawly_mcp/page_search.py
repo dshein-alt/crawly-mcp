@@ -343,3 +343,35 @@ class FormTier:
         return urlunsplit(
             (split.scheme, split.netloc, split.path, new_query, split.fragment)
         )
+
+
+class PageSearchService:
+    def __init__(
+        self,
+        browser_manager: BrowserManager,
+        *,
+        http_client_factory: Callable[[], httpx.AsyncClient] = httpx.AsyncClient,
+    ) -> None:
+        self._browser_manager = browser_manager
+        self._http_client_factory = http_client_factory
+
+    async def _fetch_source_html(self, url: str) -> str:
+        browser_context = await self._browser_manager.new_context()
+        guard = URLSafetyGuard()
+        await guard.attach(browser_context)
+        try:
+            page = await browser_context.new_page()
+            try:
+                await self._browser_manager.goto(
+                    page, url, timeout_ms=FETCH_PAGE_TIMEOUT_SECONDS * 1000
+                )
+                return await page.content()
+            except PlaywrightTimeoutError as exc:
+                raise NavigationFailedError(f"source fetch timed out: {exc}") from exc
+            except PlaywrightError as exc:
+                raise NavigationFailedError(f"source fetch failed: {exc}") from exc
+            finally:
+                with suppress(Exception):
+                    await page.close()
+        finally:
+            await browser_context.close()

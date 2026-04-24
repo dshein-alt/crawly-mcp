@@ -4,6 +4,9 @@ import httpx
 import pytest
 
 from crawly_mcp.models import PageSearchResult
+from types import SimpleNamespace
+
+from crawly_mcp.errors import NavigationFailedError
 from crawly_mcp.page_search import (
     AlgoliaHit,
     AlgoliaTier,
@@ -11,6 +14,7 @@ from crawly_mcp.page_search import (
     FormTier,
     OpenSearchHit,
     OpenSearchTier,
+    PageSearchService,
     ReadthedocsHit,
     ReadthedocsTier,
     TextHit,
@@ -299,3 +303,77 @@ async def test_form_tier_execute_preserves_existing_action_query_params() -> Non
 
     assert "lang=en" in captured[0]
     assert "q=hello+world" in captured[0] or "q=hello%20world" in captured[0]
+
+
+class _FakeBrowser:
+    def __init__(
+        self, *, html: str, navigate_raises: BaseException | None = None
+    ) -> None:
+        self._html = html
+        self._navigate_raises = navigate_raises
+        self.close_calls = 0
+
+    async def new_context(self):
+        outer = self
+
+        class _Ctx:
+            async def new_page(self_inner):
+                del self_inner
+
+                async def content() -> str:
+                    return outer._html
+
+                async def close() -> None:
+                    return None
+
+                async def goto(url, **kwargs):
+                    del url, kwargs
+                    if outer._navigate_raises is not None:
+                        raise outer._navigate_raises
+
+                async def route(pattern, handler):
+                    del pattern, handler
+
+                return SimpleNamespace(
+                    content=content,
+                    close=close,
+                    goto=goto,
+                    route=route,
+                    url="",
+                )
+
+            async def close(self_inner):
+                del self_inner
+                outer.close_calls += 1
+
+            async def route(self_inner, pattern, handler):
+                del self_inner, pattern, handler
+
+        return _Ctx()
+
+    async def goto(self, page, url, timeout_ms=None):
+        del timeout_ms
+        await page.goto(url)
+
+
+@pytest.mark.asyncio
+async def test_source_fetch_returns_html() -> None:
+    browser = _FakeBrowser(html="<html><body>hello</body></html>")
+    service = PageSearchService(
+        browser_manager=browser, http_client_factory=lambda: httpx.AsyncClient()
+    )
+    html = await service._fetch_source_html("https://example.com/")
+    assert "hello" in html
+    assert browser.close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_source_fetch_raises_navigation_failed_on_error() -> None:
+    from patchright.async_api import Error as PlaywrightError
+
+    browser = _FakeBrowser(html="", navigate_raises=PlaywrightError("nope"))
+    service = PageSearchService(
+        browser_manager=browser, http_client_factory=lambda: httpx.AsyncClient()
+    )
+    with pytest.raises(NavigationFailedError):
+        await service._fetch_source_html("https://example.com/")
