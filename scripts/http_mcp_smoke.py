@@ -23,7 +23,7 @@ async def _run(url: str, fetch_url: str, private_url: str | None) -> None:
 
             tools = await session.list_tools()
             tool_names = sorted(tool.name for tool in tools.tools)
-            if tool_names != ["fetch", "search"]:
+            if tool_names != ["fetch", "page_search", "search"]:
                 raise RuntimeError(f"unexpected tools list: {tool_names}")
 
             fetch_result = await session.call_tool("fetch", {"urls": [fetch_url]})
