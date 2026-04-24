@@ -285,19 +285,43 @@ def _hit_for(action: str, base_url: str, input_name: str) -> SearchFormHit:
     return SearchFormHit(action=urljoin(base_url, action), input_name=input_name)
 
 
-def _first_named_input(form) -> str | None:
+_TEXT_LIKE_INPUT_TYPES = {"", "search", "text", "email", "url", "tel"}
+_NON_QUERY_INPUT_TYPES = {
+    "button",
+    "checkbox",
+    "file",
+    "hidden",
+    "image",
+    "radio",
+    "reset",
+    "submit",
+}
+
+
+def _search_input_name(form) -> str | None:
+    fallback_name: str | None = None
+    first_text_like_name: str | None = None
     for inp in form.find_all("input"):
-        name = (inp.get("name") or "").strip()
-        if name:
-            return name
-    return None
+        raw_name = (inp.get("name") or "").strip()
+        if not raw_name:
+            continue
+        input_type = (inp.get("type") or "").strip().lower()
+        if input_type == "search":
+            return raw_name
+        if input_type in _NON_QUERY_INPUT_TYPES:
+            continue
+        if fallback_name is None and raw_name.lower() in _SEARCH_INPUT_NAMES:
+            fallback_name = raw_name
+        if first_text_like_name is None and input_type in _TEXT_LIKE_INPUT_TYPES:
+            first_text_like_name = raw_name
+    return fallback_name or first_text_like_name
 
 
 def _match_role_search(soup, base_url: str) -> SearchFormHit | None:
     for form, action in _iter_get_forms(soup):
         if (form.get("role") or "").lower() != "search":
             continue
-        name = _first_named_input(form)
+        name = _search_input_name(form)
         if name:
             return _hit_for(action, base_url, name)
     return None
@@ -317,9 +341,9 @@ def _match_input_type_search(soup, base_url: str) -> SearchFormHit | None:
 def _match_input_name_fallback(soup, base_url: str) -> SearchFormHit | None:
     for form, action in _iter_get_forms(soup):
         for inp in form.find_all("input"):
-            name = (inp.get("name") or "").strip().lower()
-            if name in _SEARCH_INPUT_NAMES:
-                return _hit_for(action, base_url, name)
+            raw_name = (inp.get("name") or "").strip()
+            if raw_name.lower() in _SEARCH_INPUT_NAMES:
+                return _hit_for(action, base_url, raw_name)
     return None
 
 

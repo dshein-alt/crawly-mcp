@@ -228,6 +228,18 @@ def test_detect_search_form_role_search_priority() -> None:
     assert hit.input_name == "query"
 
 
+def test_detect_search_form_role_search_skips_hidden_inputs() -> None:
+    html = """
+    <form role="search" action="/s" method="get">
+      <input type="hidden" name="utf8" value="✓">
+      <input type="search" name="Query">
+    </form>
+    """
+    hit = detect_search_form(html, base_url="https://example.com/")
+    assert hit is not None
+    assert hit.input_name == "Query"
+
+
 def test_detect_search_form_input_type_search() -> None:
     html = """<form action="/go" method="get"><input type="search" name="s"></form>"""
     hit = detect_search_form(html, base_url="https://example.com/")
@@ -240,6 +252,13 @@ def test_detect_search_form_input_name_fallback() -> None:
     hit = detect_search_form(html, base_url="https://example.com/")
     assert hit is not None
     assert hit.input_name == "query"
+
+
+def test_detect_search_form_input_name_fallback_preserves_case() -> None:
+    html = """<form action="/do" method="get"><input name="Query" type="text"></form>"""
+    hit = detect_search_form(html, base_url="https://example.com/")
+    assert hit is not None
+    assert hit.input_name == "Query"
 
 
 def test_detect_search_form_skips_post_forms() -> None:

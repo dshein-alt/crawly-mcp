@@ -20,6 +20,7 @@ from crawly_mcp.page_search import (
     ReadthedocsTier,
     TextHit,
     TextTier,
+    TierExecutionResult,
     _truncate_page_search_response,
 )
 from crawly_mcp.parsing import SearchFormHit
@@ -44,12 +45,13 @@ async def test_text_tier_execute_returns_snippets() -> None:
     )
     tier = TextTier()
     hit = tier.detect(html, "https://example.com/")
-    results = await tier.execute(hit, "structured")
-    assert len(results) == 1
-    assert isinstance(results[0], PageSearchResult)
-    assert "structured" in results[0].snippet.lower()
-    assert results[0].url is None
-    assert results[0].title == "Docs"
+    outcome = await tier.execute(hit, "structured")
+    assert len(outcome.results) == 1
+    assert isinstance(outcome.results[0], PageSearchResult)
+    assert "structured" in outcome.results[0].snippet.lower()
+    assert outcome.results[0].url is None
+    assert outcome.results[0].title == "Docs"
+    assert outcome.results_url is None
 
 
 @pytest.mark.asyncio
@@ -57,8 +59,9 @@ async def test_text_tier_execute_empty_on_no_match() -> None:
     html = "<html><title>T</title><body>nothing relevant here</body></html>"
     tier = TextTier()
     hit = tier.detect(html, "https://example.com/")
-    results = await tier.execute(hit, "structured")
-    assert results == []
+    outcome = await tier.execute(hit, "structured")
+    assert outcome.results == []
+    assert outcome.results_url is None
 
 
 def _mock_algolia_transport(
@@ -124,13 +127,14 @@ async def test_algolia_tier_execute_maps_hits_to_results(
     )
     hit = AlgoliaHit(app_id="APP", api_key="KEY", index_name="docs")
 
-    results = await tier.execute(hit, "login")
+    outcome = await tier.execute(hit, "login")
 
-    assert len(results) == 1
-    r = results[0]
+    assert len(outcome.results) == 1
+    r = outcome.results[0]
     assert r.url == "https://docs.example.com/page#anchor"
     assert "Guide" in (r.title or "")
     assert "<em>" not in r.snippet
+    assert outcome.results_url is None
 
 
 _OSD = """<?xml version="1.0" encoding="UTF-8"?>
@@ -181,7 +185,7 @@ async def test_opensearch_tier_execute_substitutes_query_and_fetches_results(
     )
     hit = OpenSearchHit(descriptor_url="https://example.com/osd.xml")
 
-    results = await tier.execute(hit, "match")
+    outcome = await tier.execute(hit, "match")
 
     assert len(captured) == 1
     assert (
@@ -189,7 +193,8 @@ async def test_opensearch_tier_execute_substitutes_query_and_fetches_results(
         or "q=match&" in captured[0]
         or captured[0].endswith("q=match&lang=en")
     )
-    assert any("match" in r.snippet.lower() for r in results)
+    assert outcome.results_url == captured[0]
+    assert any("match" in r.snippet.lower() for r in outcome.results)
 
 
 def test_readthedocs_tier_detect_parses_slug_and_version() -> None:
@@ -246,10 +251,10 @@ async def test_readthedocs_tier_execute_maps_blocks_to_results(
     )
     hit = ReadthedocsHit(project="myproject", version="stable")
 
-    results = await tier.execute(hit, "intro")
+    outcome = await tier.execute(hit, "intro")
 
-    assert len(results) == 1
-    r = results[0]
+    assert len(outcome.results) == 1
+    r = outcome.results[0]
     assert r.url is not None and "myproject.readthedocs.io" in r.url
     assert r.title == "Introduction"
     assert "<span>" not in r.snippet
@@ -282,11 +287,12 @@ async def test_form_tier_execute_constructs_url_and_fetches() -> None:
         form=SearchFormHit(action="https://example.com/search", input_name="q")
     )
 
-    results = await tier.execute(hit, "term")
+    outcome = await tier.execute(hit, "term")
 
     assert captured == ["https://example.com/search?q=term"]
-    assert len(results) == 1
-    assert "term" in results[0].snippet.lower()
+    assert outcome.results_url == "https://example.com/search?q=term"
+    assert len(outcome.results) == 1
+    assert "term" in outcome.results[0].snippet.lower()
 
 
 @pytest.mark.asyncio
@@ -307,6 +313,26 @@ async def test_form_tier_execute_preserves_existing_action_query_params() -> Non
 
     assert "lang=en" in captured[0]
     assert "q=hello+world" in captured[0] or "q=hello%20world" in captured[0]
+
+
+@pytest.mark.asyncio
+async def test_form_tier_execute_preserves_parameter_name_case() -> None:
+    captured: list[str] = []
+
+    async def fake_fetch(url: str) -> str:
+        captured.append(url)
+        return "<html><body>ok</body></html>"
+
+    tier = FormTier(page_fetcher=fake_fetch)
+    hit = FormHit(
+        form=SearchFormHit(
+            action="https://example.com/search",
+            input_name="Query",
+        )
+    )
+    await tier.execute(hit, "hello world")
+
+    assert "Query=hello+world" in captured[0] or "Query=hello%20world" in captured[0]
 
 
 class _FakeBrowser:
@@ -387,7 +413,7 @@ class _FakeTier:
         name: str,
         *,
         hit: object | None,
-        results: list[PageSearchResult],
+        results: TierExecutionResult | list[PageSearchResult],
         raises: BaseException | None = None,
     ) -> None:
         self.name = name
@@ -400,7 +426,9 @@ class _FakeTier:
         del source_html, source_url
         return self._hit
 
-    async def execute(self, hit, query: str) -> list[PageSearchResult]:
+    async def execute(
+        self, hit, query: str
+    ) -> TierExecutionResult | list[PageSearchResult]:
         del hit, query
         self.execute_calls += 1
         if self._raises is not None:
@@ -444,6 +472,28 @@ async def test_cascade_skips_non_detected_tiers(_noop_ssrf_guard: None) -> None:
 
     assert response.mode == "form"
     assert response.attempted == ["form"]
+
+
+@pytest.mark.asyncio
+async def test_cascade_preserves_results_url_from_winning_tier(
+    _noop_ssrf_guard: None,
+) -> None:
+    browser = _FakeBrowser(html="<html><body>src</body></html>")
+    form = _FakeTier(
+        "form",
+        hit=object(),
+        results=TierExecutionResult(
+            results=[PageSearchResult(snippet="F")],
+            results_url="https://example.com/search?q=q",
+        ),
+    )
+    text = _FakeTier("text", hit=object(), results=[])
+    service = _make_service_with_tiers(browser, [form, text])
+
+    response = await service.search(url="https://example.com/", query="q")
+
+    assert response.mode == "form"
+    assert response.results_url == "https://example.com/search?q=q"
 
 
 @pytest.mark.asyncio

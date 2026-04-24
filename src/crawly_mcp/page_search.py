@@ -53,6 +53,12 @@ class TextHit:
     title: str | None
 
 
+@dataclass(frozen=True)
+class TierExecutionResult:
+    results: list[PageSearchResult]
+    results_url: str | None = None
+
+
 class TextTier:
     name = "text"
 
@@ -64,17 +70,19 @@ class TextTier:
         text = extract_readable_text(source_html)
         return TextHit(text=text, title=title)
 
-    async def execute(self, hit: TextHit, query: str) -> list[PageSearchResult]:
+    async def execute(self, hit: TextHit, query: str) -> TierExecutionResult:
         snippets = build_snippets(
             hit.text,
             query,
             max_matches=MAX_SEARCH_RESULTS,
             context_chars=PAGE_SEARCH_SNIPPET_CONTEXT_CHARS,
         )
-        return [
-            PageSearchResult(snippet=snippet, url=None, title=hit.title)
-            for snippet in snippets
-        ]
+        return TierExecutionResult(
+            results=[
+                PageSearchResult(snippet=snippet, url=None, title=hit.title)
+                for snippet in snippets
+            ]
+        )
 
 
 @dataclass(frozen=True)
@@ -103,7 +111,7 @@ class AlgoliaTier:
             index_name=config["indexName"],
         )
 
-    async def execute(self, hit: AlgoliaHit, query: str) -> list[PageSearchResult]:
+    async def execute(self, hit: AlgoliaHit, query: str) -> TierExecutionResult:
         url = (
             f"https://{hit.app_id.lower()}-dsn.algolia.net"
             f"/1/indexes/{hit.index_name}/query"
@@ -126,7 +134,9 @@ class AlgoliaTier:
             )
         response.raise_for_status()
         payload = response.json()
-        return [self._map_hit(h) for h in payload.get("hits", [])]
+        return TierExecutionResult(
+            results=[self._map_hit(h) for h in payload.get("hits", [])]
+        )
 
     @staticmethod
     def _map_hit(raw: dict) -> PageSearchResult:
@@ -177,7 +187,7 @@ class OpenSearchTier:
 
     async def execute(
         self, hit: OpenSearchHit, query: str
-    ) -> list[PageSearchResult]:
+    ) -> TierExecutionResult:
         await URLSafetyGuard().validate_user_url(hit.descriptor_url)
         async with self._client_factory() as client:
             response = await client.get(
@@ -186,10 +196,13 @@ class OpenSearchTier:
         response.raise_for_status()
         template = self._first_html_template(response.text)
         if template is None:
-            return []
+            return TierExecutionResult(results=[])
         results_url = self._substitute(template, query)
         html = await self._fetch_page(results_url)
-        return _snippets_from_html(html, query, results_url=results_url)
+        return TierExecutionResult(
+            results=_snippets_from_html(html, query),
+            results_url=results_url,
+        )
 
     @staticmethod
     def _first_html_template(xml_text: str) -> str | None:
@@ -223,10 +236,7 @@ class OpenSearchTier:
 def _snippets_from_html(
     html: str,
     query: str,
-    *,
-    results_url: str,
 ) -> list[PageSearchResult]:
-    del results_url
     soup = BeautifulSoup(html, "html.parser")
     title_tag = soup.title
     title = title_tag.string.strip() if title_tag and title_tag.string else None
@@ -276,7 +286,7 @@ class ReadthedocsTier:
 
     async def execute(
         self, hit: ReadthedocsHit, query: str
-    ) -> list[PageSearchResult]:
+    ) -> TierExecutionResult:
         await URLSafetyGuard().validate_user_url(_RTD_API)
         params = {"q": query, "project": hit.project, "version": hit.version}
         async with self._client_factory() as client:
@@ -300,8 +310,8 @@ class ReadthedocsTier:
                     )
                 )
                 if len(out) >= MAX_SEARCH_RESULTS:
-                    return out
-        return out
+                    return TierExecutionResult(results=out)
+        return TierExecutionResult(results=out)
 
     @staticmethod
     def _block_url(result: dict, block: dict) -> str | None:
@@ -331,10 +341,13 @@ class FormTier:
             return None
         return FormHit(form=form)
 
-    async def execute(self, hit: FormHit, query: str) -> list[PageSearchResult]:
+    async def execute(self, hit: FormHit, query: str) -> TierExecutionResult:
         results_url = self._append_query(hit.form.action, hit.form.input_name, query)
         html = await self._fetch_page(results_url)
-        return _snippets_from_html(html, query, results_url=results_url)
+        return TierExecutionResult(
+            results=_snippets_from_html(html, query),
+            results_url=results_url,
+        )
 
     @staticmethod
     def _append_query(action: str, param_name: str, query: str) -> str:
@@ -420,7 +433,7 @@ class PageSearchService:
                         continue
                     attempted.append(tier.name)
                     try:
-                        results = await asyncio.wait_for(
+                        outcome = await asyncio.wait_for(
                             tier.execute(hit, request.query),
                             PAGE_SEARCH_TIER_TIMEOUT_SECONDS,
                         )
@@ -435,24 +448,27 @@ class PageSearchService:
                             exc,
                         )
                         continue
+                    results, results_url = self._normalize_tier_outcome(outcome)
                     if results:
                         return self._respond(
                             mode=tier.name,
                             attempted=attempted,
                             source_url=request.url,
-                            results_url=None,
+                            results_url=results_url,
                             results=results,
                         )
 
                 text_tier = self._tiers[-1]
                 attempted.append("text")
                 hit = text_tier.detect(source_html, request.url)
-                text_results = await text_tier.execute(hit, request.query)
+                text_results, text_results_url = self._normalize_tier_outcome(
+                    await text_tier.execute(hit, request.query)
+                )
                 return self._respond(
                     mode="text",
                     attempted=attempted,
                     source_url=request.url,
-                    results_url=None,
+                    results_url=text_results_url,
                     results=text_results,
                 )
         except TimeoutError as exc:
@@ -462,6 +478,14 @@ class PageSearchService:
         finally:
             duration = asyncio.get_running_loop().time() - started
             logger.info("page_search done duration={:.2f}s", duration)
+
+    @staticmethod
+    def _normalize_tier_outcome(
+        outcome: TierExecutionResult | list[PageSearchResult],
+    ) -> tuple[list[PageSearchResult], str | None]:
+        if isinstance(outcome, TierExecutionResult):
+            return outcome.results, outcome.results_url
+        return outcome, None
 
     def _respond(
         self,
