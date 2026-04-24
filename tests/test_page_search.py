@@ -20,6 +20,7 @@ from crawly_mcp.page_search import (
     ReadthedocsTier,
     TextHit,
     TextTier,
+    _truncate_page_search_response,
 )
 from crawly_mcp.parsing import SearchFormHit
 
@@ -489,3 +490,42 @@ async def test_search_ssrf_rejects_private_url() -> None:
     )
     with pytest.raises(URLSafetyError):
         await service.search(url="http://127.0.0.1/", query="hello")
+
+
+def _response_with(n_snippets: int, snippet: str) -> PageSearchResponse:
+    return PageSearchResponse(
+        mode="text",
+        attempted=["text"],
+        source_url="https://example.com/",
+        results_url=None,
+        results=[PageSearchResult(snippet=snippet) for _ in range(n_snippets)],
+        truncated=False,
+    )
+
+
+def test_truncate_noop_under_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CRAWLY_FETCH_MAX_SIZE", "10000")
+    response = _response_with(3, "short")
+    out = _truncate_page_search_response(response)
+    assert out.truncated is False
+    assert len(out.results) == 3
+
+
+def test_truncate_drops_trailing_results_when_over_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CRAWLY_FETCH_MAX_SIZE", "300")
+    response = _response_with(5, "x" * 100)
+    out = _truncate_page_search_response(response)
+    assert out.truncated is True
+    assert len(out.results) < 5
+
+
+def test_truncate_returns_skeleton_even_if_still_over_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CRAWLY_FETCH_MAX_SIZE", "10")
+    response = _response_with(3, "x" * 50)
+    out = _truncate_page_search_response(response)
+    assert out.truncated is True
+    assert out.results == []

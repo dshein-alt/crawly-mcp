@@ -482,4 +482,23 @@ class PageSearchService:
 
 
 def _truncate_page_search_response(response: PageSearchResponse) -> PageSearchResponse:
-    return response
+    limit = resolve_fetch_max_size()
+    if len(response.model_dump_json().encode("utf-8")) <= limit:
+        return response
+
+    truncated = response.model_copy(update={"truncated": True})
+    while (
+        truncated.results
+        and len(truncated.model_dump_json().encode("utf-8")) > limit
+    ):
+        truncated = truncated.model_copy(
+            update={"results": truncated.results[:-1]}
+        )
+
+    if len(truncated.model_dump_json().encode("utf-8")) > limit:
+        logger.warning(
+            "page_search response skeleton exceeds CRAWLY_FETCH_MAX_SIZE={} "
+            "even with zero results; returning anyway",
+            limit,
+        )
+    return truncated
