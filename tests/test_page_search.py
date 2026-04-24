@@ -9,6 +9,8 @@ from crawly_mcp.page_search import (
     AlgoliaTier,
     OpenSearchHit,
     OpenSearchTier,
+    ReadthedocsHit,
+    ReadthedocsTier,
     TextHit,
     TextTier,
 )
@@ -177,3 +179,66 @@ async def test_opensearch_tier_execute_substitutes_query_and_fetches_results(
         or captured[0].endswith("q=match&lang=en")
     )
     assert any("match" in r.snippet.lower() for r in results)
+
+
+def test_readthedocs_tier_detect_parses_slug_and_version() -> None:
+    tier = ReadthedocsTier(http_client_factory=lambda: httpx.AsyncClient())
+    hit = tier.detect(
+        "", "https://myproject.readthedocs.io/en/stable/guide/intro.html"
+    )
+    assert isinstance(hit, ReadthedocsHit)
+    assert hit.project == "myproject"
+    assert hit.version == "stable"
+
+
+def test_readthedocs_tier_detect_skips_root_path() -> None:
+    tier = ReadthedocsTier(http_client_factory=lambda: httpx.AsyncClient())
+    assert tier.detect("", "https://myproject.readthedocs.io/") is None
+
+
+def test_readthedocs_tier_detect_skips_non_readthedocs_host() -> None:
+    tier = ReadthedocsTier(http_client_factory=lambda: httpx.AsyncClient())
+    assert tier.detect("", "https://example.com/en/stable/page.html") is None
+
+
+@pytest.mark.asyncio
+async def test_readthedocs_tier_execute_maps_blocks_to_results(
+    _noop_ssrf_guard: None,
+) -> None:
+    payload = {
+        "results": [
+            {
+                "path": "guide/intro.html",
+                "project": "myproject",
+                "domain": "https://myproject.readthedocs.io",
+                "blocks": [
+                    {
+                        "type": "section",
+                        "id": "intro",
+                        "title": "Introduction",
+                        "content": "This introduces the <span>project</span> and its goals",
+                    }
+                ],
+            }
+        ]
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert "q=intro" in str(request.url)
+        assert "project=myproject" in str(request.url)
+        assert "version=stable" in str(request.url)
+        return httpx.Response(200, json=payload)
+
+    transport = httpx.MockTransport(handler)
+    tier = ReadthedocsTier(
+        http_client_factory=lambda: httpx.AsyncClient(transport=transport)
+    )
+    hit = ReadthedocsHit(project="myproject", version="stable")
+
+    results = await tier.execute(hit, "intro")
+
+    assert len(results) == 1
+    r = results[0]
+    assert r.url is not None and "myproject.readthedocs.io" in r.url
+    assert r.title == "Introduction"
+    assert "<span>" not in r.snippet

@@ -236,3 +236,77 @@ def _snippets_from_html(
         context_chars=PAGE_SEARCH_SNIPPET_CONTEXT_CHARS,
     )
     return [PageSearchResult(snippet=snippet, url=None, title=title) for snippet in snippets]
+
+
+_RTD_API = "https://readthedocs.org/api/v2/search/"
+_RTD_HOSTS = (".readthedocs.io", ".readthedocs-hosted.com")
+
+
+@dataclass(frozen=True)
+class ReadthedocsHit:
+    project: str
+    version: str
+
+
+class ReadthedocsTier:
+    name = "readthedocs"
+
+    def __init__(
+        self, *, http_client_factory: Callable[[], httpx.AsyncClient]
+    ) -> None:
+        self._client_factory = http_client_factory
+
+    def detect(self, source_html: str, source_url: str) -> ReadthedocsHit | None:
+        del source_html
+        parsed = urlparse(source_url)
+        host = (parsed.hostname or "").lower()
+        if not any(host.endswith(suffix) for suffix in _RTD_HOSTS):
+            return None
+        parts = host.split(".")
+        if len(parts) < 3 or not parts[0]:
+            return None
+        slug = parts[0]
+        segments = [s for s in parsed.path.split("/") if s]
+        if len(segments) < 2:
+            return None
+        version = segments[1]
+        return ReadthedocsHit(project=slug, version=version)
+
+    async def execute(
+        self, hit: ReadthedocsHit, query: str
+    ) -> list[PageSearchResult]:
+        await URLSafetyGuard().validate_user_url(_RTD_API)
+        params = {"q": query, "project": hit.project, "version": hit.version}
+        async with self._client_factory() as client:
+            response = await client.get(
+                _RTD_API,
+                params=params,
+                timeout=PAGE_SEARCH_TIER_TIMEOUT_SECONDS,
+            )
+        response.raise_for_status()
+        payload = response.json()
+        out: list[PageSearchResult] = []
+        for result in payload.get("results", []):
+            for block in result.get("blocks", [])[:MAX_SEARCH_RESULTS]:
+                url = self._block_url(result, block)
+                snippet = re.sub(r"</?[a-zA-Z][^>]*>", "", block.get("content") or "")
+                out.append(
+                    PageSearchResult(
+                        snippet=snippet.strip(),
+                        url=url,
+                        title=block.get("title"),
+                    )
+                )
+                if len(out) >= MAX_SEARCH_RESULTS:
+                    return out
+        return out
+
+    @staticmethod
+    def _block_url(result: dict, block: dict) -> str | None:
+        domain = (result.get("domain") or "").rstrip("/")
+        path = (result.get("path") or "").lstrip("/")
+        anchor = block.get("id")
+        if not domain or not path:
+            return None
+        base = f"{domain}/{path}"
+        return f"{base}#{anchor}" if anchor else base
