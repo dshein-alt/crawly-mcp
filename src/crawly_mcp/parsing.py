@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json as _json
 import re
 from collections.abc import Iterable
 from urllib.parse import parse_qs, quote_plus, unquote, urljoin, urlsplit
@@ -203,3 +204,45 @@ def _word_boundary_pattern(query: str) -> re.Pattern[str]:
     left = r"\b" if query[0].isalnum() else ""
     right = r"\b" if query[-1].isalnum() else ""
     return re.compile(f"{left}{re.escape(query)}{right}", re.IGNORECASE)
+
+
+def detect_algolia_config(html: str) -> dict[str, str] | None:
+    soup = BeautifulSoup(html, "html.parser")
+    for tag in soup.find_all("script", {"type": "application/json"}):
+        content = tag.string or tag.get_text()
+        if not content:
+            continue
+        try:
+            parsed = _json.loads(content)
+        except (ValueError, TypeError):
+            continue
+        if isinstance(parsed, dict) and _has_algolia_keys(parsed):
+            return _algolia_subset(parsed)
+
+    return _scan_algolia_inline(html)
+
+
+_ALGOLIA_REQUIRED = ("appId", "apiKey", "indexName")
+
+
+def _has_algolia_keys(payload: dict) -> bool:
+    return all(payload.get(key) for key in _ALGOLIA_REQUIRED)
+
+
+def _algolia_subset(payload: dict) -> dict[str, str]:
+    return {key: str(payload[key]) for key in _ALGOLIA_REQUIRED}
+
+
+_ALGOLIA_KEY_VALUE = re.compile(
+    r"""(?P<key>appId|apiKey|indexName)\s*:\s*["'](?P<val>[^"']+)["']""",
+    re.VERBOSE,
+)
+
+
+def _scan_algolia_inline(html: str) -> dict[str, str] | None:
+    found: dict[str, str] = {}
+    for match in _ALGOLIA_KEY_VALUE.finditer(html):
+        found[match.group("key")] = match.group("val")
+        if _has_algolia_keys(found):
+            return _algolia_subset(found)
+    return None

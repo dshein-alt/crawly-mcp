@@ -3,6 +3,7 @@ from pathlib import Path
 from crawly_mcp.parsing import (
     build_search_url,
     build_snippets,
+    detect_algolia_config,
     extract_search_results,
     is_search_blocked,
     normalize_result_url,
@@ -138,3 +139,49 @@ def test_build_snippets_bounds_each_snippet_length() -> None:
     snippets = build_snippets(text, "target", max_matches=1, context_chars=100)
     assert len(snippets) == 1
     assert len(snippets[0]) <= 140
+
+
+def test_detect_algolia_config_inline_json() -> None:
+    html = """
+    <html><head>
+      <script type="application/json" id="docsearch-config">
+        {"appId": "APPID123", "apiKey": "KEY456", "indexName": "my-docs"}
+      </script>
+      <script src="https://cdn.jsdelivr.net/npm/@docsearch/js@3"></script>
+    </head></html>
+    """
+    config = detect_algolia_config(html)
+    assert config is not None
+    assert config["appId"] == "APPID123"
+    assert config["apiKey"] == "KEY456"
+    assert config["indexName"] == "my-docs"
+
+
+def test_detect_algolia_config_inline_call() -> None:
+    html = """
+    <script>
+      docsearch({
+        appId: "X1",
+        apiKey: "Y2",
+        indexName: "docs",
+        container: "#docsearch",
+      });
+    </script>
+    """
+    config = detect_algolia_config(html)
+    assert config is not None
+    assert config == {"appId": "X1", "apiKey": "Y2", "indexName": "docs"}
+
+
+def test_detect_algolia_config_missing_returns_none() -> None:
+    html = "<html><body>nothing here</body></html>"
+    assert detect_algolia_config(html) is None
+
+
+def test_detect_algolia_config_missing_required_field_returns_none() -> None:
+    html = """
+    <script>
+      window.docSearchConfig = { appId: "A", apiKey: "K" };
+    </script>
+    """
+    assert detect_algolia_config(html) is None
