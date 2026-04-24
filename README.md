@@ -4,6 +4,10 @@ Browser-backed web search and page fetch for local LLMs, exposed as MCP tools an
 
 The design history is tracked in [docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md).
 
+## License
+
+This project is licensed under the [MIT License](LICENSE).
+
 ## Naming
 
 - Python distribution: `crawly-mcp`
@@ -15,6 +19,7 @@ The design history is tracked in [docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATI
 
 - `search(provider, context)` runs a browser-backed search on `duckduckgo` (default), `google`, or `yandex` and returns up to 5 organic result URLs.
 - `fetch(urls, content_format)` fetches `1..5` URLs and returns browser-rendered page content with per-URL `pages`, `errors`, and `truncated` fields. Use `content_format="html"` for raw HTML or `content_format="text"` for extracted readable text.
+- `page_search(url, query)` searches for content on a single page. Tries known site-search facilities first (Algolia DocSearch, OpenSearch descriptor, Readthedocs API), then generic GET form detection, then find-in-page text as a fallback. Returns a `mode` discriminator plus up to 5 results with snippets and optional result URLs.
 
 `context` is intentionally the search query string for caller compatibility.
 
@@ -44,7 +49,10 @@ Run the CLI directly:
 ```sh
 uv run crawly-cli search --context "python async playwright"
 uv run crawly-cli fetch https://example.com
+uv run crawly-cli page-search --url https://docs.example.com/guide --query "authentication"
 ```
+
+The `page-search` subcommand prints a JSON `PageSearchResponse` with `mode`, `attempted`, `results_url`, and `results[]`.
 
 Run the MCP server over stdio:
 

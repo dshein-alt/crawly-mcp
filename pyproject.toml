@@ -3,10 +3,14 @@ name = "crawly-mcp"
 version = "0.2.0"
 description = "Browser-backed search and fetch tools for local LLMs"
 readme = "README.md"
+license = "MIT"
 authors = [
     { name = "Danil Shein", email = "dshein@altlinux.org" }
 ]
 requires-python = ">=3.11"
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+]
 dependencies = [
     "beautifulsoup4>=4.14.3",
     "httpx>=0.27,<1.0",
