@@ -92,6 +92,18 @@ def test_create_server_reports_package_version() -> None:
     assert init_options.server_version == get_package_version()
 
 
+def test_create_server_instructions_guide_silent_page_search_workflow() -> None:
+    server = create_server()
+    init_options = server._mcp_server.create_initialization_options()
+    instructions = init_options.instructions or ""
+
+    assert "Use tools silently" in instructions
+    assert "`page_search(url, query)`" in instructions
+    assert "`fetch(..., content_format=\"text\")`" in instructions
+    assert "Final answers should be concise prose" in instructions
+    assert "Do not claim a timeout" in instructions
+
+
 def test_page_search_request_requires_non_empty_query() -> None:
     try:
         PageSearchRequest(url="https://example.com", query="")
@@ -150,3 +162,35 @@ def test_page_search_tool_schema_advertises_required_fields() -> None:
     assert set(schema["required"]) == {"url", "query"}
     assert schema["properties"]["url"]["type"] == "string"
     assert schema["properties"]["query"]["type"] == "string"
+
+
+def test_page_search_tool_description_advertises_real_result_urls() -> None:
+    async def _run() -> str:
+        server = create_server()
+        tools = await server.list_tools()
+        for tool in tools:
+            if tool.name == "page_search":
+                return tool.description
+        raise AssertionError("page_search tool missing from list_tools()")
+
+    description = asyncio.run(_run())
+
+    assert "`mode`" in description
+    assert "`results_url`" in description
+    assert "real result URL to fetch next" in description
+    assert "text snippets" in description
+
+
+def test_fetch_tool_description_recommends_text_for_prose_answers() -> None:
+    async def _run() -> str:
+        server = create_server()
+        tools = await server.list_tools()
+        for tool in tools:
+            if tool.name == "fetch":
+                return tool.description
+        raise AssertionError("fetch tool missing from list_tools()")
+
+    description = asyncio.run(_run())
+
+    assert '`content_format="text"`' in description
+    assert "final prose answers" in description

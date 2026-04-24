@@ -31,10 +31,15 @@ def create_server(
     server = FastMCP(
         name="crawly",
         instructions=(
-            "Two tools are available: `search` for top result URLs and `fetch` for "
-            "browser-rendered page content. `fetch` accepts `content_format=html|text` "
-            "and returns content in that format. The `context` field on `search` is "
-            "the search query text."
+            "Three tools are available: `search` for broad web result URLs, "
+            "`page_search(url, query)` for bounded search within a known site or docs "
+            "entrypoint, and `fetch` for browser-rendered page content. Use tools "
+            "silently: do not narrate tool calls or internal reasoning. Prefer "
+            "`page_search(url, query)` before broad `search` when the site is already "
+            "known. Prefer `fetch(..., content_format=\"text\")` when reading docs or "
+            "articles for a final prose answer. Final answers should be concise prose "
+            "unless the user explicitly asks for JSON. Do not claim a timeout, fetch, "
+            "or search failure unless the tool actually returned one."
         ),
         host=host,
         port=port,
@@ -57,7 +62,8 @@ def create_server(
         description=(
             "Fetch up to 5 URLs and return final browser-rendered page content per URL. "
             'Use `content_format="html"` for raw HTML or `content_format="text"` '
-            "for extracted readable text."
+            "for extracted readable text. Prefer `content_format=\"text\"` for docs, "
+            "articles, and final prose answers."
         ),
     )
     async def fetch(
@@ -72,10 +78,14 @@ def create_server(
     @server.tool(
         name="page_search",
         description=(
-            "Search for content on a single page using a three-tier cascade: "
+            "Search for content on a single page or docs site using a three-tier cascade: "
             "known site-search facilities (Algolia DocSearch, OpenSearch, "
             "Readthedocs) first, then generic GET form detection, then "
-            "find-in-page text fallback."
+            "find-in-page text fallback. The response includes `mode`, ordered "
+            "`attempted`, optional `results_url`, up to 5 `results`, and `truncated`. "
+            "If a result entry includes `url`, it is a real result URL to fetch next. "
+            "If result URLs are absent, the tool only found text snippets on the "
+            "source or search-results page."
         ),
     )
     async def page_search(url: str, query: str) -> PageSearchResponse:
