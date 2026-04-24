@@ -4,6 +4,7 @@ from crawly_mcp.parsing import (
     build_search_url,
     build_snippets,
     detect_algolia_config,
+    detect_opensearch_href,
     extract_search_results,
     is_search_blocked,
     normalize_result_url,
@@ -185,3 +186,30 @@ def test_detect_algolia_config_missing_required_field_returns_none() -> None:
     </script>
     """
     assert detect_algolia_config(html) is None
+
+
+def test_detect_opensearch_href_absolute() -> None:
+    html = """
+    <html><head>
+      <link rel="search" type="application/opensearchdescription+xml"
+            href="https://example.com/osd.xml" title="Example">
+    </head></html>
+    """
+    href = detect_opensearch_href(html, base_url="https://example.com/page")
+    assert href == "https://example.com/osd.xml"
+
+
+def test_detect_opensearch_href_relative_resolved() -> None:
+    html = """<link rel="search" type="application/opensearchdescription+xml" href="/osd.xml">"""
+    href = detect_opensearch_href(html, base_url="https://docs.example.com/a/b")
+    assert href == "https://docs.example.com/osd.xml"
+
+
+def test_detect_opensearch_href_missing() -> None:
+    html = "<html><head></head></html>"
+    assert detect_opensearch_href(html, base_url="https://example.com/") is None
+
+
+def test_detect_opensearch_href_wrong_type_ignored() -> None:
+    html = """<link rel="search" type="application/rss+xml" href="/rss.xml">"""
+    assert detect_opensearch_href(html, base_url="https://example.com/") is None

@@ -246,3 +246,18 @@ def _scan_algolia_inline(html: str) -> dict[str, str] | None:
         if _has_algolia_keys(found):
             return _algolia_subset(found)
     return None
+
+
+def detect_opensearch_href(html: str, *, base_url: str) -> str | None:
+    soup = BeautifulSoup(html, "html.parser")
+    for link in soup.find_all("link", rel=True):
+        rels = link.get("rel") or []
+        if "search" not in [r.lower() for r in rels]:
+            continue
+        if (link.get("type") or "").lower() != "application/opensearchdescription+xml":
+            continue
+        href = (link.get("href") or "").strip()
+        if not href:
+            continue
+        return urljoin(base_url, href)
+    return None
