@@ -7,6 +7,8 @@ from crawly_mcp.models import PageSearchResult
 from crawly_mcp.page_search import (
     AlgoliaHit,
     AlgoliaTier,
+    FormHit,
+    FormTier,
     OpenSearchHit,
     OpenSearchTier,
     ReadthedocsHit,
@@ -14,6 +16,7 @@ from crawly_mcp.page_search import (
     TextHit,
     TextTier,
 )
+from crawly_mcp.parsing import SearchFormHit
 
 
 def test_text_tier_detect_always_returns_hit() -> None:
@@ -242,3 +245,57 @@ async def test_readthedocs_tier_execute_maps_blocks_to_results(
     assert r.url is not None and "myproject.readthedocs.io" in r.url
     assert r.title == "Introduction"
     assert "<span>" not in r.snippet
+
+
+def test_form_tier_detect_returns_hit_when_form_present() -> None:
+    html = """<form role="search" action="/s" method="get"><input name="q"></form>"""
+    tier = FormTier(page_fetcher=_UnusedFetcher())
+    hit = tier.detect(html, "https://example.com/")
+    assert isinstance(hit, FormHit)
+    assert hit.form.action == "https://example.com/s"
+    assert hit.form.input_name == "q"
+
+
+def test_form_tier_detect_none_when_no_form() -> None:
+    tier = FormTier(page_fetcher=_UnusedFetcher())
+    assert tier.detect("<html><body>nothing</body></html>", "https://example.com/") is None
+
+
+@pytest.mark.asyncio
+async def test_form_tier_execute_constructs_url_and_fetches() -> None:
+    captured: list[str] = []
+
+    async def fake_fetch(url: str) -> str:
+        captured.append(url)
+        return "<html><title>Results</title><body>term found here</body></html>"
+
+    tier = FormTier(page_fetcher=fake_fetch)
+    hit = FormHit(
+        form=SearchFormHit(action="https://example.com/search", input_name="q")
+    )
+
+    results = await tier.execute(hit, "term")
+
+    assert captured == ["https://example.com/search?q=term"]
+    assert len(results) == 1
+    assert "term" in results[0].snippet.lower()
+
+
+@pytest.mark.asyncio
+async def test_form_tier_execute_preserves_existing_action_query_params() -> None:
+    captured: list[str] = []
+
+    async def fake_fetch(url: str) -> str:
+        captured.append(url)
+        return "<html><body>ok</body></html>"
+
+    tier = FormTier(page_fetcher=fake_fetch)
+    hit = FormHit(
+        form=SearchFormHit(
+            action="https://example.com/s?lang=en", input_name="q"
+        )
+    )
+    await tier.execute(hit, "hello world")
+
+    assert "lang=en" in captured[0]
+    assert "q=hello+world" in captured[0] or "q=hello%20world" in captured[0]

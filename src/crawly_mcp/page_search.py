@@ -310,3 +310,36 @@ class ReadthedocsTier:
             return None
         base = f"{domain}/{path}"
         return f"{base}#{anchor}" if anchor else base
+
+
+@dataclass(frozen=True)
+class FormHit:
+    form: SearchFormHit
+
+
+class FormTier:
+    name = "form"
+
+    def __init__(self, *, page_fetcher: _PageFetcher) -> None:
+        self._fetch_page = page_fetcher
+
+    def detect(self, source_html: str, source_url: str) -> FormHit | None:
+        form = detect_search_form(source_html, base_url=source_url)
+        if form is None:
+            return None
+        return FormHit(form=form)
+
+    async def execute(self, hit: FormHit, query: str) -> list[PageSearchResult]:
+        results_url = self._append_query(hit.form.action, hit.form.input_name, query)
+        html = await self._fetch_page(results_url)
+        return _snippets_from_html(html, query, results_url=results_url)
+
+    @staticmethod
+    def _append_query(action: str, param_name: str, query: str) -> str:
+        split = urlsplit(action)
+        pairs = parse_qsl(split.query, keep_blank_values=True)
+        pairs.append((param_name, query))
+        new_query = urlencode(pairs, doseq=True)
+        return urlunsplit(
+            (split.scheme, split.netloc, split.path, new_query, split.fragment)
+        )
