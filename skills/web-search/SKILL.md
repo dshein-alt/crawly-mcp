@@ -1,6 +1,6 @@
 ---
 name: web-search
-description: Use when a context-limited LLM must search, fetch, and synthesize content from multiple pages with crawly-mcp, especially when `fetch(content_format="text")` and schema-first extraction keep search work within a small context window
+description: Use when a context-limited LLM must search, fetch, and synthesize content from multiple pages with crawly-mcp, especially when bounded `page_search(...)`, small `fetch(content_format="text")` batches, and concise prose synthesis keep search work within a small context window
 ---
 
 # Web Search
@@ -13,8 +13,9 @@ For `crawly-mcp`, prefer the built-in bounded path first:
 - call `search(...)` to collect candidate URLs
 - call `fetch(urls=[...], content_format="text")` instead of raw HTML
 - keep `urls` small, usually `1..3` per fetch for local models
-- extract only a fixed JSON schema per page
-- reduce extracted records in batches, not all at once
+- answer in concise prose by default
+- switch to schema-first extraction only when the task is large enough that direct prose synthesis would overflow context or when the user explicitly asks for structured output
+- if schema extraction is needed, reduce extracted records in batches, not all at once
 
 ## When To Use
 
@@ -27,13 +28,13 @@ Do not use for single-page questions or when search snippets already answer the 
 
 ## Default Workflow
 
-1. Define the final output schema first.
-2. Run `search(...)` and keep only the most relevant URLs.
-3. Fetch with `content_format="text"`.
-4. Map each page into one JSON record matching the schema.
-5. Append records to `extracted.jsonl`.
-6. Reduce in small batches, then merge rollups if needed.
-7. Keep `urls.txt`, `extracted.jsonl`, and any rollups until the answer is verified.
+1. Start with `page_search(url, query)` when you already know the site or docs entrypoint.
+2. Otherwise run `search(...)` and keep only the most relevant URLs.
+3. Fetch with `content_format="text"` and keep batches small.
+4. Answer in concise prose when the source set is small and clear.
+5. Use per-source structured notes only when the task is broad enough to need batching.
+6. If structured notes are needed, reduce in small batches, then merge rollups if needed.
+7. Keep any intermediate notes until the answer is verified.
 
 ## crawly-mcp Guidance
 
@@ -44,24 +45,29 @@ For this repo and its Docker image:
 - Use `content_format="html"` only when markup structure is the actual task.
 - Treat `pages[url]` as bounded source text, not as something to dump straight back into the next prompt.
 - If `page_search(...)` returns `mode="opensearch"` or `mode="form"`, keep `results_url` because it identifies the landed search page.
+- Use tools silently; do not narrate tool calls or internal reasoning to the user.
+- Final answers should be prose by default. Include raw JSON only on request.
 
 ## Why This Works
 
 | Step | Failure if skipped |
 |---|---|
-| Schema first | Per-page outputs turn into variable-length prose |
+| Bounded first step | Broad search wastes budget when one docs site could answer directly |
 | `content_format="text"` | Markup dominates tokens before reasoning starts |
-| Per-URL JSON record | Reduce step balloons with free-form summaries |
-| JSONL append | Long runs cannot resume cleanly |
+| Prose-first on small runs | Simple tasks become noisy tool dumps or unnecessary JSON |
+| Optional per-URL record | Large reductions lose fidelity without structured notes |
+| Keep intermediates | Long runs cannot resume cleanly |
 | Batched reduce | Loading every record reintroduces overflow |
-| Keep intermediates | Wrong final answers are hard to debug |
+| Accurate failure reporting | Fake timeouts and invented fallbacks erode trust |
 
 ## Common Mistakes
 
 - Fetching raw HTML for article-style extraction
 - Using `search(...)` when a known page plus `page_search(...)` would answer faster
 - Sending all fetched pages into one prompt
-- Asking the model to “summarize the page” without a schema
+- Dumping raw MCP payloads into the answer
+- Narrating tool selection or chain-of-thought
+- Switching to JSON extraction for a small, bounded lookup
 - Reducing all extracted records in one pass
 - Deleting intermediates before checking the final answer
 
@@ -74,7 +80,6 @@ from pathlib import Path
 SCHEMA = {
     "source_url": "",
     "title": "",
-    "date": "",
     "key_facts": [],
 }
 
@@ -111,10 +116,13 @@ answer = reduce_batch(rollups) if len(rollups) > 1 else rollups[0]
 
 Adapt `mcp_call`, `llm_extract`, and `reduce_batch` to your stack.
 
+Use this pattern only when the job is large enough to justify structured notes. For a small docs lookup, call `page_search(...)`, fetch the best 1 to 2 URLs as text, and answer directly in prose.
+
 ## Practical Defaults For Small Models
 
 - fetch one URL at a time
 - use `content_format="text"`
-- keep extraction schema under 10 fields
+- keep prose answers short unless the user asks for depth
+- keep extraction schema under 10 fields when structured notes are needed
 - batch reduce at 5 to 10 records
 - if overflow persists, reduce URLs per fetch and shrink the extraction schema
