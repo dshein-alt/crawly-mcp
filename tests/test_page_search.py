@@ -4,7 +4,14 @@ import httpx
 import pytest
 
 from crawly_mcp.models import PageSearchResult
-from crawly_mcp.page_search import AlgoliaHit, AlgoliaTier, TextHit, TextTier
+from crawly_mcp.page_search import (
+    AlgoliaHit,
+    AlgoliaTier,
+    OpenSearchHit,
+    OpenSearchTier,
+    TextHit,
+    TextTier,
+)
 
 
 def test_text_tier_detect_always_returns_hit() -> None:
@@ -113,3 +120,60 @@ async def test_algolia_tier_execute_maps_hits_to_results(
     assert r.url == "https://docs.example.com/page#anchor"
     assert "Guide" in (r.title or "")
     assert "<em>" not in r.snippet
+
+
+_OSD = """<?xml version="1.0" encoding="UTF-8"?>
+<OpenSearchDescription xmlns="http://a9.com/-/spec/opensearch/1.1/">
+  <ShortName>Docs</ShortName>
+  <Url type="text/html" template="https://example.com/search?q={searchTerms}&amp;lang=en"/>
+</OpenSearchDescription>
+"""
+
+
+class _UnusedFetcher:
+    async def __call__(self, url: str) -> str:
+        raise AssertionError("should not be invoked")
+
+
+def test_opensearch_tier_detect_returns_href_when_link_present() -> None:
+    html = """<link rel="search" type="application/opensearchdescription+xml" href="/osd.xml">"""
+    tier = OpenSearchTier(
+        http_client_factory=lambda: httpx.AsyncClient(),
+        page_fetcher=_UnusedFetcher(),
+    )
+    hit = tier.detect(html, "https://example.com/")
+    assert isinstance(hit, OpenSearchHit)
+    assert hit.descriptor_url == "https://example.com/osd.xml"
+
+
+@pytest.mark.asyncio
+async def test_opensearch_tier_execute_substitutes_query_and_fetches_results(
+    _noop_ssrf_guard: None,
+) -> None:
+    descriptor_transport = httpx.MockTransport(
+        lambda req: httpx.Response(200, text=_OSD)
+    )
+    captured: list[str] = []
+
+    async def fake_fetch(url: str) -> str:
+        captured.append(url)
+        return (
+            "<html><title>Results</title>"
+            "<body><p>Hello world match here</p></body></html>"
+        )
+
+    tier = OpenSearchTier(
+        http_client_factory=lambda: httpx.AsyncClient(transport=descriptor_transport),
+        page_fetcher=fake_fetch,
+    )
+    hit = OpenSearchHit(descriptor_url="https://example.com/osd.xml")
+
+    results = await tier.execute(hit, "match")
+
+    assert len(captured) == 1
+    assert (
+        "q=match" in captured[0]
+        or "q=match&" in captured[0]
+        or captured[0].endswith("q=match&lang=en")
+    )
+    assert any("match" in r.snippet.lower() for r in results)

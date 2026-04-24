@@ -141,3 +141,98 @@ class AlgoliaTier:
             url=raw.get("url"),
             title=" › ".join(title_parts) if title_parts else None,
         )
+
+
+class _PageFetcher(Protocol):
+    def __call__(self, url: str) -> Awaitable[str]: ...
+
+
+_OSD_NS = "{http://a9.com/-/spec/opensearch/1.1/}"
+
+
+@dataclass(frozen=True)
+class OpenSearchHit:
+    descriptor_url: str
+
+
+class OpenSearchTier:
+    name = "opensearch"
+
+    def __init__(
+        self,
+        *,
+        http_client_factory: Callable[[], httpx.AsyncClient],
+        page_fetcher: _PageFetcher,
+    ) -> None:
+        self._client_factory = http_client_factory
+        self._fetch_page = page_fetcher
+
+    def detect(self, source_html: str, source_url: str) -> OpenSearchHit | None:
+        href = detect_opensearch_href(source_html, base_url=source_url)
+        if href is None:
+            return None
+        return OpenSearchHit(descriptor_url=href)
+
+    async def execute(
+        self, hit: OpenSearchHit, query: str
+    ) -> list[PageSearchResult]:
+        await URLSafetyGuard().validate_user_url(hit.descriptor_url)
+        async with self._client_factory() as client:
+            response = await client.get(
+                hit.descriptor_url, timeout=PAGE_SEARCH_TIER_TIMEOUT_SECONDS
+            )
+        response.raise_for_status()
+        template = self._first_html_template(response.text)
+        if template is None:
+            return []
+        results_url = self._substitute(template, query)
+        html = await self._fetch_page(results_url)
+        return _snippets_from_html(html, query, results_url=results_url)
+
+    @staticmethod
+    def _first_html_template(xml_text: str) -> str | None:
+        try:
+            root = ET.fromstring(xml_text)
+        except ET.ParseError:
+            return None
+        for url in root.findall(f"{_OSD_NS}Url"):
+            if (url.get("type") or "").lower() == "text/html":
+                template = (url.get("template") or "").strip()
+                if template:
+                    return template
+        return None
+
+    @staticmethod
+    def _substitute(template: str, query: str) -> str:
+        replacements = {
+            "searchTerms": quote(query, safe=""),
+            "startIndex": "1",
+            "count": str(MAX_SEARCH_RESULTS),
+            "language": "*",
+            "inputEncoding": "UTF-8",
+            "outputEncoding": "UTF-8",
+        }
+        out = template
+        for key, value in replacements.items():
+            out = out.replace(f"{{{key}}}", value).replace(f"{{{key}?}}", value)
+        return out
+
+
+def _snippets_from_html(
+    html: str,
+    query: str,
+    *,
+    results_url: str,
+) -> list[PageSearchResult]:
+    del results_url
+    soup = BeautifulSoup(html, "html.parser")
+    title_tag = soup.title
+    title = title_tag.string.strip() if title_tag and title_tag.string else None
+    text = extract_readable_text(html)
+    snippets = build_snippets(
+        text,
+        query,
+        max_matches=MAX_SEARCH_RESULTS,
+        context_chars=PAGE_SEARCH_SNIPPET_CONTEXT_CHARS,
+    )
+    return [PageSearchResult(snippet=snippet, url=None, title=title) for snippet in snippets]
