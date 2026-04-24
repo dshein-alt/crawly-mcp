@@ -47,7 +47,10 @@ PageSearchMode = Literal["algolia", "opensearch", "readthedocs", "form", "text"]
 
 class PageSearchResult(BaseModel):
     snippet: str            # always present, <= PAGE_SEARCH_SNIPPET_CONTEXT_CHARS
-    url: str | None         # present for tiers 1a/1b/1c/2, None for tier 3
+    url: str | None         # present for tiers 1a and 1c (structured API hits carry per-result URLs).
+                            # None for tiers 1b, 2, and 3 — those tiers extract generic snippets from
+                            # a results page whose result-link structure is unknown; the per-response
+                            # `results_url` points at the landed search page instead.
     title: str | None       # best-effort page/result heading
 
 class PageSearchResponse(BaseModel):
@@ -110,8 +113,8 @@ The cascade is orchestrated by a new `PageSearchService` in `src/crawly_mcp/page
   1. `form[role="search"]`
   2. `form` containing `input[type="search"]`
   3. `form` containing `input[name]` where `name` ∈ `{q, query, search, s}`
-  The form must have `method` unset or `method="get"` (case-insensitive) and a non-empty `action` attribute. Record the form's `action` and the matched input's `name`.
-- **Execute:** resolve `action` against the source URL. Construct `{resolved_action}?{input_name}={urlencoded query}` preserving any existing query params on `action`. Navigate via ephemeral `BrowserManager` context.
+  The form must have `method` unset or `method="get"` (case-insensitive). `action` may be absent or empty — per the HTML spec an empty action means "submit to the document's current URL", so detection treats `action=""` (or missing) as equivalent to the source URL. Record the effective action and the matched input's `name`.
+- **Execute:** resolve `action` against the source URL (an empty `action` resolves to the source URL itself). Construct `{resolved_action}?{input_name}={urlencoded query}` preserving any existing query params on `action`. Navigate via ephemeral `BrowserManager` context.
 - **Extract:** same as tier 1b — `build_snippets` on the results page, `url=None` per result, `results_url` set on the response.
 
 ### Tier 3 — Find-in-page (always runs if nothing earlier wins)
@@ -202,7 +205,11 @@ SSRF protection: `URLSafetyGuard.validate_user_url(url)` is called before every 
   serialize response to JSON, encode UTF-8; if byte length <= limit_bytes: return.
   Otherwise drop the last element of response.results, re-serialize, repeat until
   byte length <= limit_bytes or results is empty. Set response.truncated = True
-  on any drop.
+  on any drop. If the empty-results skeleton still exceeds limit_bytes (caller
+  set CRAWLY_FETCH_MAX_SIZE absurdly low), log a warning and return the skeleton
+  anyway with truncated=True — the cap is a payload advisory, not a hard
+  boundary, and the skeleton fields (source_url, results_url, attempted) carry
+  no meaningfully-truncatable content.
   ```
 
   Snippet-sized results (each ≤ 240 chars + small URL/title) make triggering this a safety net, not a normal path.

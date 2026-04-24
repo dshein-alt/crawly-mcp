@@ -626,9 +626,13 @@ def test_detect_search_form_skips_post_forms() -> None:
     assert detect_search_form(html, base_url="https://example.com/") is None
 
 
-def test_detect_search_form_requires_non_empty_action() -> None:
+def test_detect_search_form_empty_action_resolves_to_source_url() -> None:
+    # Per HTML spec, an empty/missing action means "submit to the document URL".
     html = """<form method="get"><input name="q"></form>"""
-    assert detect_search_form(html, base_url="https://example.com/") is None
+    hit = detect_search_form(html, base_url="https://example.com/docs/page.html")
+    assert hit is not None
+    assert hit.action == "https://example.com/docs/page.html"
+    assert hit.input_name == "q"
 
 
 def test_detect_search_form_relative_action_resolved() -> None:
@@ -678,9 +682,10 @@ def _iter_get_forms(soup: BeautifulSoup):
         method = (form.get("method") or "get").lower()
         if method != "get":
             continue
+        # Empty / missing action → per HTML spec, resolves to the current
+        # document URL. Return "" here and let urljoin(base_url, "") pick
+        # up the source URL at the call site.
         action = (form.get("action") or "").strip()
-        if not action:
-            continue
         yield form, action
 
 
@@ -1920,6 +1925,16 @@ def test_truncate_drops_trailing_results_when_over_limit(monkeypatch) -> None:
     out = _truncate_page_search_response(response)
     assert out.truncated is True
     assert len(out.results) < 5
+
+
+def test_truncate_returns_skeleton_even_if_still_over_limit(monkeypatch, caplog) -> None:
+    # Absurdly small cap — even the empty-results skeleton won't fit.
+    monkeypatch.setenv("CRAWLY_FETCH_MAX_SIZE", "10")
+    response = _response_with(3, "x" * 50)
+    out = _truncate_page_search_response(response)
+    assert out.truncated is True
+    assert out.results == []
+    # No raise; response returned as-is.
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -1933,14 +1948,22 @@ Expected: FAIL on import.
 ```python
 def _truncate_page_search_response(response: PageSearchResponse) -> PageSearchResponse:
     limit = resolve_fetch_max_size()
-    serialized = response.model_dump_json().encode("utf-8")
-    if len(serialized) <= limit:
+    if len(response.model_dump_json().encode("utf-8")) <= limit:
         return response
 
     truncated = response.model_copy(update={"truncated": True})
     while truncated.results and len(truncated.model_dump_json().encode("utf-8")) > limit:
         truncated = truncated.model_copy(
             update={"results": truncated.results[:-1]}
+        )
+
+    # If the empty-results skeleton is itself over the limit, the caller set
+    # CRAWLY_FETCH_MAX_SIZE absurdly low. The cap is a payload advisory, not a
+    # hard boundary — return the skeleton anyway (truncated=True already set).
+    if len(truncated.model_dump_json().encode("utf-8")) > limit:
+        logger.warning(
+            "page_search response skeleton exceeds CRAWLY_FETCH_MAX_SIZE={} "
+            "even with zero results; returning anyway", limit,
         )
     return truncated
 ```
