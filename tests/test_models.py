@@ -181,6 +181,70 @@ def test_page_search_tool_description_advertises_real_result_urls() -> None:
     assert "text snippets" in description
 
 
+def test_search_tool_schema_advertises_provider_enum_and_descriptions() -> None:
+    async def _run() -> dict:
+        server = create_server()
+        tools = await server.list_tools()
+        for tool in tools:
+            if tool.name == "search":
+                return tool.inputSchema
+        raise AssertionError("search tool missing from list_tools()")
+
+    schema = asyncio.run(_run())
+
+    provider_schema = schema["properties"]["provider"]
+    found_enum: set[str] = set()
+    for branch in provider_schema.get("anyOf", [provider_schema]):
+        if "enum" in branch:
+            found_enum.update(branch["enum"])
+    assert found_enum == set(ALLOWED_PROVIDERS), (
+        f"provider tool schema missing enum {set(ALLOWED_PROVIDERS)}; "
+        f"got {provider_schema!r}"
+    )
+    assert provider_schema.get("description"), (
+        "provider parameter must carry a description so MCP clients know "
+        "the allowed values without guessing"
+    )
+    for allowed in ALLOWED_PROVIDERS:
+        assert allowed in provider_schema["description"], (
+            f"{allowed!r} missing from provider description: "
+            f"{provider_schema['description']!r}"
+        )
+
+    context_schema = schema["properties"]["context"]
+    assert context_schema.get("description"), (
+        "context parameter must carry a description"
+    )
+
+
+def test_fetch_tool_schema_carries_parameter_descriptions() -> None:
+    async def _run() -> dict:
+        server = create_server()
+        tools = await server.list_tools()
+        for tool in tools:
+            if tool.name == "fetch":
+                return tool.inputSchema
+        raise AssertionError("fetch tool missing from list_tools()")
+
+    schema = asyncio.run(_run())
+    assert schema["properties"]["urls"].get("description")
+    assert schema["properties"]["content_format"].get("description")
+
+
+def test_page_search_tool_schema_carries_parameter_descriptions() -> None:
+    async def _run() -> dict:
+        server = create_server()
+        tools = await server.list_tools()
+        for tool in tools:
+            if tool.name == "page_search":
+                return tool.inputSchema
+        raise AssertionError("page_search tool missing from list_tools()")
+
+    schema = asyncio.run(_run())
+    assert schema["properties"]["url"].get("description")
+    assert schema["properties"]["query"].get("description")
+
+
 def test_fetch_tool_description_recommends_text_for_prose_answers() -> None:
     async def _run() -> str:
         server = create_server()
