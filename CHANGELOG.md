@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-04-30
+
+Surface complete tool argument schemas to MCP clients.
+
+### Changed
+
+- Annotate every `search`, `fetch`, and `page_search` parameter with a description and explicit constraints (provider enum, URL list bounds, non-empty strings) so MCP clients (e.g. Continuw) render proper argument help instead of `(unknown) - No description`.
+- Type the `search` tool's `provider` argument as the `SearchProvider` literal so `tools/list` advertises the allowed values (`duckduckgo`, `google`, `yandex`).
+
+### Fixed
+
+- Test coverage now asserts that `tools/list` exposes the provider enum and per-argument descriptions, preventing regressions in the schema surfaced to MCP clients.
+
 ## [0.2.0] - 2026-04-24
 
 Add initial `page_search` tool implementation.

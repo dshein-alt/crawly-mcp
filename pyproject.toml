@@ -1,6 +1,6 @@
 [project]
 name = "crawly-mcp"
-version = "0.2.0"
+version = "0.2.1"
 description = "Browser-backed search and fetch tools for local LLMs"
 readme = "README.md"
 license = "MIT"
