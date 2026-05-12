@@ -18,7 +18,7 @@ ALLOWED_BROWSER_SOURCES = (BROWSER_SOURCE_SYSTEM, BROWSER_SOURCE_BUNDLED)
 DEFAULT_MCP_HOST = "127.0.0.1"
 DEFAULT_MCP_PORT = 8000
 
-SearchProvider = Literal["duckduckgo", "google", "yandex"]
+SearchProvider = Literal["duckduckgo", "google", "yandex", "searxng"]
 ALLOWED_PROVIDERS: tuple[SearchProvider, ...] = get_args(SearchProvider)
 DEFAULT_PROVIDER: SearchProvider = "duckduckgo"
 MAX_SEARCH_RESULTS = 5
@@ -76,11 +76,26 @@ DEFAULT_USE_PERSISTENT_PROFILES = True
 WARMUP_PAGE_TIMEOUT_SECONDS = 3
 SEARCH_CONTEXT_ACQUIRE_TIMEOUT_SECONDS = 10
 
+# Keyed by browser-driven providers only; searxng is handled separately and
+# does not use the warm-up hop or homepage hint.
 PROVIDER_HOMEPAGE: dict[SearchProvider, str] = {
     "duckduckgo": "https://duckduckgo.com/",
     "google": "https://www.google.com/",
     "yandex": "https://yandex.ru/",
 }
+
+# --- SearXNG provider configuration ---
+#
+# SearXNG is an opt-in provider: the caller must pass provider="searxng" AND
+# set CRAWLY_SEARXNG_URL to the URL of a SearXNG instance that exposes the
+# JSON API (format=json). Public instances on https://searx.space generally
+# return 429 / redirect / empty results to non-browser clients via their
+# botdetection middleware, so this provider is intended for self-hosted or
+# privately-known instances. There is no instance registry and no automatic
+# cross-provider fallback for searxng — failure surfaces to the caller.
+
+CRAWLY_SEARXNG_URL_ENV_VAR = "CRAWLY_SEARXNG_URL"
+SEARXNG_PER_INSTANCE_TIMEOUT_SECONDS = 8
 
 PageSearchMode = Literal["algolia", "opensearch", "readthedocs", "form", "text"]
 PAGE_SEARCH_TIER_TIMEOUT_SECONDS = 10
