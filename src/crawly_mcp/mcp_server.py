@@ -8,7 +8,6 @@ from pydantic import Field
 
 from crawly_mcp.browser import BrowserManager
 from crawly_mcp.constants import (
-    ALLOWED_PROVIDERS,
     DEFAULT_FETCH_CONTENT_FORMAT,
     DEFAULT_MCP_HOST,
     DEFAULT_MCP_PORT,
@@ -37,6 +36,7 @@ def create_server(
         try:
             yield
         finally:
+            await service.aclose()
             await browser_manager.close()
 
     server = FastMCP(
@@ -63,16 +63,25 @@ def create_server(
         description="Run a web search in a real browser. `context` is the search query text.",
     )
     async def search(
+        # NOTE: typed as SearchProvider (not SearchProvider | None) so the MCP
+        # JSON schema advertises a flat enum with an explicit `default` rather
+        # than an `anyOf` branching on `null`. The runtime model in models.py
+        # still tolerates `provider=None` for callers that bypass MCP (e.g. the
+        # CLI's argparse default), via the field validator that coerces None
+        # to DEFAULT_PROVIDER.
         provider: Annotated[
-            SearchProvider | None,
+            SearchProvider,
             Field(
+                default=DEFAULT_PROVIDER,
                 description=(
-                    "Search engine to query. One of: "
-                    + ", ".join(repr(p) for p in ALLOWED_PROVIDERS)
-                    + f". Defaults to {DEFAULT_PROVIDER!r} when omitted or null."
+                    "search provider; defaults to `duckduckgo`. Other options: "
+                    "`google`, `yandex`, `searxng`. `searxng` is opt-in and "
+                    "requires the `CRAWLY_SEARXNG_URL` env var pointing at a "
+                    "SearXNG instance with JSON output enabled (public instances "
+                    "typically block automated clients)."
                 ),
             ),
-        ] = None,
+        ] = DEFAULT_PROVIDER,
         *,
         context: Annotated[
             str,

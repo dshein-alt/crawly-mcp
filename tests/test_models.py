@@ -210,6 +210,7 @@ def test_search_tool_schema_advertises_provider_enum_and_descriptions() -> None:
             f"{allowed!r} missing from provider description: "
             f"{provider_schema['description']!r}"
         )
+    assert provider_schema.get("default") == "duckduckgo"
 
     context_schema = schema["properties"]["context"]
     assert context_schema.get("description"), (
