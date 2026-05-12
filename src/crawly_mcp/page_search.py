@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import re
-import xml.etree.ElementTree as ET
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
@@ -19,6 +18,7 @@ from urllib.parse import (
 
 import httpx
 from bs4 import BeautifulSoup
+from defusedxml.ElementTree import ParseError, fromstring
 from loguru import logger
 from patchright.async_api import (
     Error as PlaywrightError,
@@ -39,11 +39,7 @@ from crawly_mcp.errors import (
     NavigationFailedError,
     TimeoutExceededError,
 )
-from crawly_mcp.models import (
-    PageSearchRequest,
-    PageSearchResponse,
-    PageSearchResult,
-)
+from crawly_mcp.models import PageSearchRequest, PageSearchResponse, PageSearchResult
 from crawly_mcp.parsing import (
     SearchFormHit,
     build_snippets,
@@ -213,8 +209,8 @@ class OpenSearchTier:
     @staticmethod
     def _first_html_template(xml_text: str) -> str | None:
         try:
-            root = ET.fromstring(xml_text)  # noqa: S314 - descriptors are small and fetched from origin under tier timeout
-        except ET.ParseError:
+            root = fromstring(xml_text)
+        except ParseError:
             return None
         for url in root.findall(f"{_OSD_NS}Url"):
             if (url.get("type") or "").lower() == "text/html":
@@ -310,6 +306,8 @@ def _result_snippet(anchor) -> str:
 
 _RTD_API = "https://readthedocs.org/api/v2/search/"
 _RTD_HOSTS = (".readthedocs.io", ".readthedocs-hosted.com")
+_RTD_MIN_HOST_PARTS = 3
+_RTD_MIN_PATH_SEGMENTS = 2
 
 
 @dataclass(frozen=True)
@@ -331,11 +329,11 @@ class ReadthedocsTier:
         if not any(host.endswith(suffix) for suffix in _RTD_HOSTS):
             return None
         parts = host.split(".")
-        if len(parts) < 3 or not parts[0]:  # noqa: PLR2004 - subdomain + rtd apex (two labels)
+        if len(parts) < _RTD_MIN_HOST_PARTS or not parts[0]:
             return None
         slug = parts[0]
         segments = [s for s in parsed.path.split("/") if s]
-        if len(segments) < 2:  # noqa: PLR2004 - /<lang>/<version>/ prefix is two segments
+        if len(segments) < _RTD_MIN_PATH_SEGMENTS:
             return None
         version = segments[1]
         return ReadthedocsHit(project=slug, version=version)

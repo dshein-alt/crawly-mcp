@@ -11,6 +11,7 @@ authors = [
 requires-python = ">=3.11"
 dependencies = [
     "beautifulsoup4>=4.14.3",
+    "defusedxml>=0.7.1",
     "httpx>=0.27,<1.0",
     "loguru>=0.7.3",
     "mcp>=1.27.0",
