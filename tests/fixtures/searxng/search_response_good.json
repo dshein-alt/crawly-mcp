@@ -1,0 +1,16 @@
+{
+  "query": "python async playwright",
+  "number_of_results": 5,
+  "results": [
+    {"url": "https://playwright.dev/python/docs/intro", "title": "Getting started", "content": "Playwright for Python"},
+    {"url": "https://playwright.dev/python/docs/api/class-playwright", "title": "Playwright class", "content": "..."},
+    {"url": "https://pypi.org/project/playwright/", "title": "playwright · PyPI", "content": "..."},
+    {"url": "https://github.com/microsoft/playwright-python", "title": "microsoft/playwright-python", "content": "..."},
+    {"url": "https://stackoverflow.com/questions/tagged/playwright-python", "title": "Newest playwright-python questions", "content": "..."}
+  ],
+  "answers": [],
+  "corrections": [],
+  "infoboxes": [],
+  "suggestions": [],
+  "unresponsive_engines": []
+}
