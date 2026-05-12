@@ -1,0 +1,28 @@
+# Minimal SearXNG settings for use as a backend for crawly-mcp.
+# Inherits everything from the image's default settings.
+use_default_settings: true
+
+server:
+  # Replace before exposing this beyond a trusted private network.
+  secret_key: "crawly-local-not-a-real-secret"
+  # Disable the built-in IP rate limiter / botdetection. Required for the
+  # crawly-mcp client to reach the JSON API; safe only when the instance is
+  # reachable only by trusted clients on a private network.
+  limiter: false
+  image_proxy: false
+  base_url: "http://localhost:10080/"
+
+search:
+  # Enable the JSON output format. Crawly's searxng provider requires this.
+  formats:
+    - html
+    - json
+  safe_search: 0
+  autocomplete: ""
+
+general:
+  debug: false
+  instance_name: "crawly-searxng"
+
+ui:
+  static_use_hash: false

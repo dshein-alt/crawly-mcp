@@ -17,7 +17,7 @@ This project is licensed under the [MIT License](LICENSE).
 
 ## Tools
 
-- `search(provider, context)` runs a browser-backed search on `duckduckgo` (default), `google`, or `yandex` and returns up to 5 organic result URLs.
+- `search(provider, context)` runs a browser-backed search on `duckduckgo` (default), `google`, or `yandex` and returns up to 5 organic result URLs. The opt-in `searxng` provider routes the query through a JSON-API call to a SearXNG instance you supply via `CRAWLY_SEARXNG_URL`; see below.
 - `fetch(urls, content_format)` fetches `1..5` URLs and returns browser-rendered page content with per-URL `pages`, `errors`, and `truncated` fields. Use `content_format="html"` for raw HTML or `content_format="text"` for extracted readable text.
 - `page_search(url, query)` searches for content on a single page. Tries known site-search facilities first (Algolia DocSearch, OpenSearch descriptor, Readthedocs API), then generic GET form detection, then find-in-page text as a fallback. Returns a `mode` discriminator plus up to 5 results with snippets and optional result URLs.
 
@@ -41,6 +41,40 @@ To force Playwright-managed Chromium instead of a host browser:
 ```sh
 PLAYWRIGHT_BROWSER_SOURCE=bundled
 ```
+
+## SearXNG (opt-in)
+
+The `searxng` provider is **opt-in**. To use it, both conditions must hold:
+
+1. Pass `provider="searxng"` to the `search` MCP tool (or `--provider searxng` on the CLI). It is not the default.
+2. Set `CRAWLY_SEARXNG_URL` to the URL of a SearXNG instance whose JSON output is enabled (`search.formats: [..., json]` in its `settings.yml`).
+
+Without `CRAWLY_SEARXNG_URL`, the provider returns an `invalid_input` error.
+
+```sh
+CRAWLY_SEARXNG_URL=http://127.0.0.1:8080/ \
+  uv run crawly-cli search --provider searxng --context "..."
+```
+
+There is no instance registry and no automatic cross-provider fallback — failures from your SearXNG instance surface directly to the caller. This is deliberate: pinning is an explicit choice and crawly respects it.
+
+### Run alongside a local SearXNG (compose example)
+
+A self-contained recipe is in [`examples/searxng-compose/`](examples/searxng-compose/): a `docker-compose.yml` that runs both `searxng` and `crawly-mcp` on a shared network, plus a `settings.yml` with `search.formats: [html, json]` and `server.limiter: false` (the two things crawly's `searxng` provider needs from any instance). The crawly image is pulled from GHCR by default; ports are controlled via a `.env` file.
+
+```sh
+cd examples/searxng-compose
+cp .env.example .env        # edit if you want non-default ports or a local image
+docker compose up -d
+# MCP HTTP at http://127.0.0.1:10000/mcp/   (CRAWLY_HOST_PORT)
+# SearXNG UI at http://127.0.0.1:10080/     (SEARXNG_HOST_PORT)
+```
+
+See [`examples/searxng-compose/README.md`](examples/searxng-compose/README.md) for the env-var reference and a smoke-test snippet.
+
+### Why public instances generally won't work
+
+Public SearXNG instances listed on `https://searx.space` typically respond to programmatic clients with `429`, an HTTP redirect to `/`, or a `200` with an empty results page — driven by SearXNG's built-in botdetection middleware. The community of instance operators actively discourages automated scraping (it burns down their upstream Google/Bing rate-limit budget). This is why the provider expects a SearXNG you control: self-hosted, on your LAN, or otherwise configured to permit JSON access for trusted clients.
 
 ## Usage
 

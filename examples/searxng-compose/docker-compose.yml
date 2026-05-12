@@ -1,0 +1,26 @@
+services:
+  searxng:
+    image: docker.io/searxng/searxng:latest
+    restart: unless-stopped
+    volumes:
+      - ./settings.yml:/etc/searxng/settings.yml:ro
+    expose:
+      - "8080"
+    # Expose the SearXNG UI on the host for inspection / debugging. Override the
+    # port in `.env` (see `.env.example`).
+    ports:
+      - "127.0.0.1:${SEARXNG_HOST_PORT:-10080}:8080"
+
+  crawly-mcp:
+    # Pulled from GHCR by default. Override with a local image
+    # (e.g. CRAWLY_MCP_IMAGE=localhost/crawly-mcp:local) in `.env`.
+    image: ${CRAWLY_MCP_IMAGE:-ghcr.io/dshein-alt/crawly-mcp:latest}
+    restart: unless-stopped
+    depends_on:
+      - searxng
+    environment:
+      # Crawly reaches SearXNG by its compose service name on the shared network.
+      CRAWLY_SEARXNG_URL: "http://searxng:8080/"
+      CRAWLY_LOG_LEVEL: "${CRAWLY_LOG_LEVEL:-INFO}"
+    ports:
+      - "127.0.0.1:${CRAWLY_HOST_PORT:-10000}:8000"
