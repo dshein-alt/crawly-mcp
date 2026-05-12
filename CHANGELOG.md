@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-05-12
+
+Add SearXNG as an opt-in fourth search provider for self-hosted instances.
+
+### Added
+
+- `searxng` provider value on the `search` tool. Routes the query through a single SearXNG instance via its JSON API (`?format=json`) over `httpx`. The instance URL is supplied via the `CRAWLY_SEARXNG_URL` env var; without it the call returns an `invalid_input` error.
+- The `search` MCP tool's `provider` parameter is now advertised in `tools/list` as a non-nullable enum with an explicit `default` value (still `duckduckgo`). Clients that previously sent `{"provider": null}` will now receive a schema validation error; pass the desired provider string or omit the field.
+
+### Changed
+
+- `searxng` is **not** the default — `duckduckgo` remains the default. The provider exists for users who run their own SearXNG; public instances on `searx.space` actively block automated clients (botdetection middleware returns 429 / redirects / empty results), so an aspirational default would be a slow no-op. There is no instance registry and no automatic cross-provider fallback; failures from the configured instance surface to the caller.
+
+### Fixed
+
+- Parse OpenSearch descriptors with hardened XML handling.
+
 ## [0.2.1] - 2026-04-30
 
 Surface complete tool argument schemas to MCP clients.
