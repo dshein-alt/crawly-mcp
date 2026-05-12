@@ -11,6 +11,10 @@ from loguru import logger
 
 from crawly_mcp.constants import DEFAULT_PROVIDER, MAX_SEARCH_RESULTS
 
+# The four mappings below (PROVIDER_HOST_SUFFIXES, SEARCH_URL_TEMPLATES,
+# RESULT_SELECTORS, SEARCH_BLOCK_MARKERS) are keyed by browser-driven providers
+# only ("duckduckgo", "google", "yandex"). The searxng provider uses the JSON
+# API in crawly_mcp.searxng and never traverses this module.
 PROVIDER_HOST_SUFFIXES = {
     "duckduckgo": ("duckduckgo.com", "duck.com"),
     "google": ("google.com",),
@@ -57,6 +61,11 @@ SEARCH_BLOCK_MARKERS = {
 
 def build_search_url(provider: str | None, context: str) -> str:
     resolved_provider = provider or DEFAULT_PROVIDER
+    if resolved_provider not in SEARCH_URL_TEMPLATES:
+        raise KeyError(
+            f"build_search_url supports only browser-driven providers "
+            f"{sorted(SEARCH_URL_TEMPLATES)}; got {resolved_provider!r}"
+        )
     template = SEARCH_URL_TEMPLATES[resolved_provider]
     return template.format(query=quote_plus(context))
 
