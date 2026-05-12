@@ -24,7 +24,7 @@ def build_parser() -> argparse.ArgumentParser:
     search_parser.add_argument(
         "--provider",
         default=None,
-        help="Search provider: duckduckgo, google, or yandex.",
+        help="Search provider: searxng (default), duckduckgo, google, or yandex.",
     )
     search_parser.add_argument("--context", required=True, help="Search query text.")
 
@@ -49,6 +49,7 @@ async def run_search_command(provider: str | None, context: str) -> int:
     try:
         result = await service.search(provider=provider, context=context)
     finally:
+        await service.aclose()
         await browser_manager.close()
     print(result.model_dump_json(indent=2))
     return 0
@@ -60,6 +61,7 @@ async def run_fetch_command(urls: list[str]) -> int:
     try:
         result = await service.fetch(urls=urls)
     finally:
+        await service.aclose()
         await browser_manager.close()
     print(result.model_dump_json(indent=2))
     return 0

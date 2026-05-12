@@ -19,8 +19,8 @@ def _fixture(name: str) -> str:
     return (FIXTURES / name).read_text(encoding="utf-8")
 
 
-def test_build_search_url_uses_duckduckgo_by_default() -> None:
-    url = build_search_url(None, "python testing")
+def test_build_search_url_builds_duckduckgo_url() -> None:
+    url = build_search_url("duckduckgo", "python testing")
 
     assert url == "https://duckduckgo.com/?q=python+testing&ia=web"
 

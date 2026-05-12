@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import httpx
 from bs4 import BeautifulSoup
 from loguru import logger
 from patchright.async_api import (
@@ -25,6 +26,7 @@ from crawly_mcp.constants import (
     CHALLENGE_SETTLE_TIMEOUT_SECONDS,
     CRAWLY_FETCH_MAX_SIZE_ENV_VAR,
     CRAWLY_SEARCH_JITTER_MS_ENV_VAR,
+    CRAWLY_SEARXNG_URL_ENV_VAR,
     CRAWLY_TRACE_DIR_ENV_VAR,
     DEFAULT_MAX_FETCH_SIZE,
     DEFAULT_SEARCH_JITTER_MS,
@@ -34,6 +36,7 @@ from crawly_mcp.constants import (
     SEARCH_CONTEXT_ACQUIRE_TIMEOUT_SECONDS,
     SEARCH_PAGE_TIMEOUT_SECONDS,
     SEARCH_TOTAL_TIMEOUT_SECONDS,
+    SEARXNG_PER_INSTANCE_TIMEOUT_SECONDS,
     TRACE_CAPTURE_TIMEOUT_SECONDS,
     WARMUP_PAGE_TIMEOUT_SECONDS,
     FetchContentFormat,
@@ -59,6 +62,7 @@ from crawly_mcp.parsing import (
     extract_search_results,
     search_block_marker,
 )
+from crawly_mcp.searxng import searxng_search
 from crawly_mcp.security import URLSafetyGuard
 
 
@@ -267,6 +271,14 @@ FINGERPRINT_SNAPSHOT_JS = """async () => {
 class WebSearchService:
     def __init__(self, browser_manager: BrowserManager) -> None:
         self._browser_manager = browser_manager
+        self._http = httpx.AsyncClient(
+            timeout=httpx.Timeout(10.0),
+            follow_redirects=True,
+            max_redirects=3,
+        )
+
+    async def aclose(self) -> None:
+        await self._http.aclose()
 
     async def search(
         self, *, provider: str | None = None, context: str
@@ -280,6 +292,51 @@ class WebSearchService:
         logger.info(
             "search entry provider={} context={!r}", request.provider, request.context
         )
+        if request.provider == "searxng":
+            return await self._search_via_searxng(request)
+        return await self._search_via_browser(request)
+
+    async def _search_via_searxng(self, request: SearchRequest) -> SearchResponse:
+        pinned = os.environ.get(CRAWLY_SEARXNG_URL_ENV_VAR)
+        if not pinned:
+            raise InvalidInputError(
+                f"provider='searxng' requires {CRAWLY_SEARXNG_URL_ENV_VAR} to be set "
+                f"to the URL of a SearXNG instance with JSON output enabled."
+            )
+        if not pinned.startswith(("https://", "http://")):
+            raise InvalidInputError(
+                f"{CRAWLY_SEARXNG_URL_ENV_VAR} must be http(s)://; got {pinned!r}"
+            )
+        instance_url = pinned if pinned.endswith("/") else pinned + "/"
+
+        logger.info("searxng entry instance={}", instance_url)
+        try:
+            urls = await searxng_search(
+                instance_url,
+                request.context,
+                client=self._http,
+                timeout=SEARXNG_PER_INSTANCE_TIMEOUT_SECONDS,
+            )
+        except httpx.TimeoutException as exc:
+            logger.warning("searxng timeout instance={} message={}", instance_url, exc)
+            raise TimeoutExceededError(
+                f"searxng instance {instance_url!r} timed out"
+            ) from exc
+        except (httpx.RequestError, httpx.HTTPStatusError) as exc:
+            logger.warning(
+                "searxng instance failed url={} type={} message={}",
+                instance_url,
+                type(exc).__name__,
+                exc,
+            )
+            raise ProviderBlockedError(
+                f"searxng instance {instance_url!r} request failed: {exc}"
+            ) from exc
+
+        logger.info("searxng instance={} results={}", instance_url, len(urls))
+        return SearchResponse(urls=urls)
+
+    async def _search_via_browser(self, request: SearchRequest) -> SearchResponse:
         started = time.monotonic()
         trace = SearchTrace.create(request.provider, request.context)
 
