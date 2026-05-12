@@ -4,12 +4,9 @@ services:
     restart: unless-stopped
     volumes:
       - ./settings.yml:/etc/searxng/settings.yml:ro
-    expose:
-      - "8080"
-    # Expose the SearXNG UI on the host for inspection / debugging. Override the
-    # port in `.env` (see `.env.example`).
-    ports:
-      - "127.0.0.1:${SEARXNG_HOST_PORT:-10080}:8080"
+    # No `ports:` mapping — SearXNG is reachable only by crawly-mcp on the
+    # compose network via http://searxng:8080/. Add a ports mapping
+    # temporarily if you want to poke the SearXNG UI from the host.
 
   crawly-mcp:
     # Pulled from GHCR by default. Override with a local image

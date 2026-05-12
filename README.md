@@ -64,11 +64,12 @@ A self-contained recipe is in [`examples/searxng-compose/`](examples/searxng-com
 
 ```sh
 cd examples/searxng-compose
-cp .env.example .env        # edit if you want non-default ports or a local image
+cp .env.example .env        # edit if you want a non-default host port or local image
 docker compose up -d
 # MCP HTTP at http://127.0.0.1:10000/mcp/   (CRAWLY_HOST_PORT)
-# SearXNG UI at http://127.0.0.1:10080/     (SEARXNG_HOST_PORT)
 ```
+
+SearXNG itself is reachable only on the compose network (`http://searxng:8080/` from crawly); no host port is mapped by default.
 
 See [`examples/searxng-compose/README.md`](examples/searxng-compose/README.md) for the env-var reference and a smoke-test snippet.
 

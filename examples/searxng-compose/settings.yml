@@ -10,7 +10,10 @@ server:
   # reachable only by trusted clients on a private network.
   limiter: false
   image_proxy: false
-  base_url: "http://localhost:10080/"
+  # Used by SearXNG for internal redirects / self-links. The instance is
+  # reached only from inside the compose network, so this points at the
+  # compose service name and the container port.
+  base_url: "http://searxng:8080/"
 
 search:
   # Enable the JSON output format. Crawly's searxng provider requires this.

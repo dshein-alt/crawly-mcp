@@ -26,10 +26,9 @@ The defaults in `.env.example`:
 |---|---|---|
 | `CRAWLY_MCP_IMAGE` | `ghcr.io/dshein-alt/crawly-mcp:latest` | Container image for the crawly-mcp service. Override with a local build (`localhost/crawly-mcp:local`) when developing. |
 | `CRAWLY_HOST_PORT` | `10000` | Host port that crawly's MCP HTTP transport binds to. Clients reach the server at `http://127.0.0.1:${CRAWLY_HOST_PORT}/mcp/`. |
-| `SEARXNG_HOST_PORT` | `10080` | Host port for the SearXNG UI / API. Handy for sanity-checking the instance in a browser. |
 | `CRAWLY_LOG_LEVEL` | `INFO` | Loguru level for crawly. |
 
-If you change `SEARXNG_HOST_PORT`, also update the `server.base_url` in `settings.yml` to match.
+SearXNG itself is not exposed to the host — it's reachable only by crawly inside the compose network as `http://searxng:8080/`. If you want to inspect the SearXNG UI from your browser for debugging, temporarily add a `ports:` mapping to the `searxng` service in `docker-compose.yml`.
 
 ## Run
 
@@ -37,8 +36,7 @@ If you change `SEARXNG_HOST_PORT`, also update the `server.base_url` in `setting
 docker compose up -d
 
 # Crawly's MCP HTTP transport is reachable at:
-#   http://127.0.0.1:10000/mcp/         (or whatever CRAWLY_HOST_PORT you set)
-# The SearXNG UI is at http://127.0.0.1:10080/  (or your SEARXNG_HOST_PORT)
+#   http://127.0.0.1:10000/mcp/   (or whatever CRAWLY_HOST_PORT you set)
 ```
 
 Smoke-test the SearXNG provider via the MCP `search` tool:
