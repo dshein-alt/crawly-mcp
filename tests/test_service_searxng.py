@@ -123,6 +123,44 @@ async def test_non_searxng_provider_skips_searxng_path(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_aclose_closes_http_client(monkeypatch) -> None:
     svc = _make_service(monkeypatch)
-    svc._http.aclose = AsyncMock()
+    client = svc._http  # capture before aclose() drops the reference
+    client.aclose = AsyncMock()
     await svc.aclose()
-    svc._http.aclose.assert_awaited_once()
+    client.aclose.assert_awaited_once()
+    assert svc._http is None
+
+
+@pytest.mark.asyncio
+async def test_aclose_is_idempotent(monkeypatch) -> None:
+    svc = _make_service(monkeypatch)
+    client = svc._http
+    client.aclose = AsyncMock()
+    await svc.aclose()
+    # Second call must not blow up even though _http is now None.
+    await svc.aclose()
+    client.aclose.assert_awaited_once()
+    assert svc._http is None
+
+
+@pytest.mark.asyncio
+async def test_http_client_is_lazily_recreated_after_aclose(monkeypatch) -> None:
+    """The FastMCP streamable-http transport can call aclose() per session.
+    The next search must work — _http rebuilds on demand instead of staying
+    closed for the rest of the process lifetime.
+    """
+    monkeypatch.setenv("CRAWLY_SEARXNG_URL", "https://pinned.example/")
+    captured: list[object] = []
+
+    async def fake_adapter(instance_url, query, *, client, timeout):
+        captured.append(client)
+        return ["https://r.example/"]
+
+    svc = _make_service(monkeypatch)
+    # _make_service installs its own stub; swap to our capturing adapter.
+    monkeypatch.setattr("crawly_mcp.service.searxng_search", fake_adapter)
+    svc._http = None  # simulate post-aclose state
+
+    resp = await svc.search(provider="searxng", context="x")
+    assert resp.urls == ["https://r.example/"]
+    assert svc._http is not None
+    assert captured[0] is svc._http

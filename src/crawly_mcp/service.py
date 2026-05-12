@@ -271,14 +271,28 @@ FINGERPRINT_SNAPSHOT_JS = """async () => {
 class WebSearchService:
     def __init__(self, browser_manager: BrowserManager) -> None:
         self._browser_manager = browser_manager
-        self._http = httpx.AsyncClient(
-            timeout=httpx.Timeout(10.0),
-            follow_redirects=True,
-            max_redirects=3,
-        )
+        # _http is built lazily on first use and re-created after aclose().
+        # The FastMCP streamable-http transport fires `lifespan` per MCP
+        # session, so aclose() can run multiple times in a single process;
+        # eagerly constructing in __init__ would leave a closed client behind.
+        self._http: httpx.AsyncClient | None = None
+
+    def _get_http(self) -> httpx.AsyncClient:
+        if self._http is None:
+            self._http = httpx.AsyncClient(
+                timeout=httpx.Timeout(10.0),
+                follow_redirects=True,
+                max_redirects=3,
+            )
+        return self._http
 
     async def aclose(self) -> None:
-        await self._http.aclose()
+        if self._http is None:
+            return
+        client = self._http
+        self._http = None
+        with suppress(Exception):
+            await client.aclose()
 
     async def search(
         self, *, provider: str | None = None, context: str
@@ -314,7 +328,7 @@ class WebSearchService:
             urls = await searxng_search(
                 instance_url,
                 request.context,
-                client=self._http,
+                client=self._get_http(),
                 timeout=SEARXNG_PER_INSTANCE_TIMEOUT_SECONDS,
             )
         except httpx.TimeoutException as exc:
