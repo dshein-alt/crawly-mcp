@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-05-12
+
+### Changed
+
+- The `examples/searxng-compose/` compose example no longer maps SearXNG to a host port; the instance is reachable only on the compose network as `http://searxng:8080/`. `SEARXNG_HOST_PORT` is removed from `.env.example`, and `server.base_url` in the bundled `settings.yml` now reflects the compose-network address.
+
+### Fixed
+
+- `provider="searxng"` no longer fails with `httpx.ClientCloseError("Cannot send a request, as the client has been closed.")` after the first MCP session ends. The shared `httpx.AsyncClient` owned by `WebSearchService` is now built lazily and rebuilt after `aclose()`, so the FastMCP streamable-http transport's per-session lifespan teardown doesn't leave a dead client behind for subsequent sessions.
+
 ## [0.3.0] - 2026-05-12
 
 Add SearXNG as an opt-in fourth search provider for self-hosted instances.
