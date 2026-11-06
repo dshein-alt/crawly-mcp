@@ -674,6 +674,14 @@ class PageSearchService:
                 )
                 continue
             results, results_url = self._normalize_tier_outcome(outcome)
+            # A wall the tier recognised outranks anything it extracted. A
+            # CAPTCHA page says "Checking your browser", which matches a query
+            # about browsers, and a snippet scraped off a wall is not a result
+            # — it is the wall talking.
+            wall = getattr(outcome, "wall", None)
+            if wall is not None:
+                attempted.append(_wall_tier_attempt(tier.name, wall, results_url))
+                continue
             if results:
                 attempted.append(
                     TierAttempt(
@@ -779,28 +787,35 @@ def _page_wall(html: str, url: str) -> str | None:
     return None
 
 
+def _wall_tier_attempt(
+    tier_name: PageSearchTier, wall: str, results_url: str | None
+) -> TierAttempt:
+    """Record a facility that was refused mid-search.
+
+    The site's own search endpoint answered with a wall, which is a refusal to
+    be searched — not an index with nothing in it, and not a result set either.
+    """
+    return TierAttempt(
+        tier=tier_name,
+        outcome="failed",
+        detail=(
+            f"site search facility landed on a {wall} wall at {results_url}; "
+            "it refused the search rather than answering it"
+        ),
+    )
+
+
 def _empty_tier_attempt(
     tier_name: PageSearchTier,
     outcome: TierExecutionResult,
     results_url: str | None,
 ) -> TierAttempt:
-    """Record a tier that produced nothing, saying which kind of nothing it was.
+    """Record a facility that answered with nothing.
 
-    A facility that answered with no results and a facility that was refused by
-    a wall look the same from the outside and mean the opposite for the caller:
-    one is a site with nothing on the topic, the other is a site that would not
-    answer. The distinction has to survive into `attempted`.
+    Reached only by a facility that genuinely answered: a wall is recorded by
+    `_wall_tier_attempt` before results are ever considered.
     """
-    wall = outcome.wall
-    if wall is not None:
-        return TierAttempt(
-            tier=tier_name,
-            outcome="failed",
-            detail=(
-                f"site search facility landed on a {wall} wall at {results_url}; "
-                "it refused the search rather than answering it"
-            ),
-        )
+    del outcome, results_url
     return TierAttempt(
         tier=tier_name,
         outcome="empty",

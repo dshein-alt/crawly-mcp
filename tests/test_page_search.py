@@ -869,3 +869,50 @@ async def test_form_tier_landing_on_a_wall_is_a_failed_tier(
     assert _tiers(response) == [("form", "failed"), ("text", "empty")]
     assert response.status == "unavailable"
     assert response.next_action == "fetch_directly"
+
+
+@pytest.mark.asyncio
+async def test_a_wall_outranks_a_snippet_scraped_off_it(
+    _noop_ssrf_guard: None,
+) -> None:
+    """A CAPTCHA says "Checking your browser", which matches a browser query.
+
+    The tier knew it had landed on a wall and still handed back a snippet, and
+    the cascade accepted results before looking at the wall — reporting the
+    wall's own copy as a successful site search.
+    """
+    browser = _FakeBrowser(html="<html><body>src</body></html>")
+    form = _FakeTier(
+        "form",
+        hit=object(),
+        results=TierExecutionResult(
+            results=[PageSearchResult(snippet="Checking your browser")],
+            results_url="https://example.com/?q=browser",
+            wall="checking your browser",
+        ),
+    )
+    text = _FakeTier("text", hit=object(), results=[])
+    service = _make_service_with_tiers(browser, [form, text])
+
+    response = await service.search(url="https://example.com/", query="browser")
+
+    assert _tiers(response) == [("form", "failed"), ("text", "empty")]
+    assert response.status == "unavailable"
+    assert response.results == []
+
+
+@pytest.mark.asyncio
+async def test_form_tier_marks_a_wall_on_its_own_results_page() -> None:
+    async def fetch(url: str) -> str:
+        del url
+        return _fixture("site/captcha.html")
+
+    tier = FormTier(page_fetcher=fetch)
+    hit = FormHit(
+        form=SearchFormHit(action="https://example.com/search", input_name="q")
+    )
+
+    outcome = await tier.execute(hit, "browser")
+
+    assert outcome.wall == "checking your browser"
+    assert outcome.results  # it did extract the wall's copy as a snippet
