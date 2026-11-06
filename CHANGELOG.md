@@ -39,6 +39,7 @@ Make every tool result say what happened and what to do next, so a caller can te
 - Classify DNS resolution failures as `navigation_failed`, so a transient resolver failure keeps cascading.
 - Return structured `page_search` outcomes for source navigation failures, timeouts, and safety refusals.
 - Keep short documentation about challenges and CAPTCHAs searchable while rejecting actual interstitials.
+- Continue provider cascading when SearXNG returns null results, malformed URLs, or malformed engine-failure metadata.
 ## [0.3.1] - 2026-05-12
 
 ### Changed

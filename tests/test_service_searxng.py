@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
 
 from crawly_mcp.constants import MAX_SEARCH_PROVIDERS
@@ -414,3 +415,33 @@ async def test_searxng_malformed_shape_cascades(monkeypatch) -> None:
     assert resp.attempted[0].status == "unavailable"
     assert "expected a list" in resp.attempted[0].detail
     svc._attempt_browser.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"results": None},
+        {"results": [], "unresponsive_engines": "google: timeout"},
+        {"results": [{"url": "https://["}]},
+    ],
+)
+async def test_malformed_json_body_cascades_to_a_working_provider(
+    monkeypatch, payload: dict
+) -> None:
+    monkeypatch.setenv("CRAWLY_SEARXNG_URL", "https://pinned.example/")
+    service = WebSearchService(MagicMock())
+    service._attempt_browser = AsyncMock(return_value=DDG_OK)
+    service._http = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(200, json=payload)
+        )
+    )
+    try:
+        response = await service.search(context="python")
+    finally:
+        await service.aclose()
+    assert response.status == "ok"
+    assert response.provider == "duckduckgo"
+    assert response.attempted[0].status == "unavailable"
+    service._attempt_browser.assert_awaited_once()

@@ -113,11 +113,14 @@ def _outcome_from_payload(payload: object, instance_url: str) -> SearxngOutcome:
     error = payload.get("error")
     error_text = str(error).strip() if error else None
 
-    unresponsive = payload.get("unresponsive_engines") or []
+    unresponsive = payload.get("unresponsive_engines", [])
+    if not isinstance(unresponsive, list):
+        error_text = error_text or (
+            f"'unresponsive_engines' was {type(unresponsive).__name__}, expected a list"
+        )
+        unresponsive = []
     unresponsive_names = tuple(
-        str(entry).strip()
-        for entry in (unresponsive if isinstance(unresponsive, list) else [])
-        if str(entry).strip()
+        str(entry).strip() for entry in unresponsive if str(entry).strip()
     )
 
     entries, shape_error = _result_entries(payload)
@@ -153,8 +156,6 @@ def _result_entries(payload: dict) -> tuple[list[object], str | None]:
     if "results" not in payload:
         return [], "response carried no 'results' field"
     raw = payload["results"]
-    if raw is None:
-        return [], None
     if isinstance(raw, list):
         return raw, None
     return [], f"'results' was {type(raw).__name__}, expected a list"
@@ -180,16 +181,28 @@ def _harvest_urls(entries: list[object]) -> tuple[list[str], list[str]]:
         if not isinstance(raw_url, str):
             malformed.append(f"url is {type(raw_url).__name__}")
             continue
-        cleaned = raw_url.strip()
-        if not cleaned:
+        try:
+            cleaned = _http_result_url(raw_url)
+        except ValueError as exc:
+            malformed.append(f"invalid URL: {exc}")
             continue
-        parsed = urlsplit(cleaned)
-        if parsed.scheme not in {"http", "https"}:
-            continue
-        if cleaned in seen:
+        if cleaned is None or cleaned in seen:
             continue
         seen.add(cleaned)
         urls.append(cleaned)
         if len(urls) >= MAX_SEARCH_RESULTS:
             break
     return urls, malformed
+
+
+def _http_result_url(raw_url: str) -> str | None:
+    """Validate web result URLs; let the adapter record malformed entries."""
+    cleaned = raw_url.strip()
+    parsed = urlsplit(cleaned)
+    if parsed.scheme not in {"http", "https"}:
+        return None
+    if not parsed.hostname:
+        raise ValueError("URL must include a hostname")
+    # Accessing port validates its syntax and range; urlsplit alone does not.
+    _ = parsed.port
+    return cleaned

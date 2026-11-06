@@ -273,7 +273,7 @@ async def test_clean_empty_answer_is_a_trustworthy_empty() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("results", ["abc", {"a": "b"}, 42])
+@pytest.mark.parametrize("results", [None, "abc", {"a": "b"}, 42])
 async def test_non_list_results_is_a_provider_failure_not_an_empty_search(
     results: object,
 ) -> None:
@@ -329,3 +329,39 @@ async def test_non_dict_entry_fails_the_shape() -> None:
         )
     assert outcome.error
     assert "entry is str" in outcome.error
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("unresponsive", [None, "google: timeout", {}, 0])
+async def test_invalid_engine_metadata_is_not_a_trustworthy_empty(
+    unresponsive: object,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"results": [], "unresponsive_engines": unresponsive}
+        )
+
+    async with _make_client(handler) as client:
+        outcome = await searxng_search(
+            "https://example.searxng/", "q", client=client, timeout=5.0
+        )
+    assert outcome.error
+    assert "unresponsive_engines" in outcome.error
+    assert outcome.answered_empty is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "url", ["https://[", "http:///missing-host", "https://example.com:not-a-port"]
+)
+async def test_malformed_result_url_is_a_provider_failure(url: str) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"results": [{"url": url}]})
+
+    async with _make_client(handler) as client:
+        outcome = await searxng_search(
+            "https://example.searxng/", "q", client=client, timeout=5.0
+        )
+    assert outcome.urls == []
+    assert "invalid URL" in outcome.error
+    assert outcome.answered_empty is False
