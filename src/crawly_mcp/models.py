@@ -12,6 +12,7 @@ from crawly_mcp.constants import (
     NextAction,
     PageKind,
     PageSearchMode,
+    PageSearchTier,
     SearchProvider,
     TierOutcome,
     ToolStatus,
@@ -156,7 +157,7 @@ class TierAttempt(BaseModel):
     like a site with nothing on it.
     """
 
-    tier: PageSearchMode
+    tier: PageSearchTier
     outcome: TierOutcome
     detail: str = ""
 

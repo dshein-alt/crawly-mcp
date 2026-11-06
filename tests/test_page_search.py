@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
@@ -27,6 +28,7 @@ from crawly_mcp.page_search import (
     TextTier,
     TierExecutionResult,
     _linked_results_from_search_html,
+    _page_wall,
     _truncate_page_search_response,
 )
 from crawly_mcp.parsing import SearchFormHit
@@ -762,3 +764,108 @@ def test_site_search_results_are_harvested_from_the_results_container() -> None:
         base_url="https://example.com/search?q=install",
     )
     assert [r.url for r in results] == ["https://example.com/docs/library#install"]
+
+
+FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def _fixture(name: str) -> str:
+    return (FIXTURES / name).read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_a_wall_source_page_is_not_reported_as_an_empty_site(
+    _noop_ssrf_guard: None,
+) -> None:
+    """A CAPTCHA answers every query with an empty page.
+
+    Reporting that as `no_results` tells the caller the site has nothing on the
+    topic, when the site never answered. It is a refusal, and the caller needs
+    to be told to come back later rather than reword the query.
+    """
+    browser = _FakeBrowser(html=_fixture("site/captcha.html"))
+    algolia = _FakeTier("algolia", hit=object(), results=[])
+    text = _FakeTier("text", hit=object(), results=[])
+    service = _make_service_with_tiers(browser, [algolia, text])
+
+    response = await service.search(url="https://example.com/", query="python")
+
+    assert response.status == "blocked"
+    assert response.next_action == "retry_later"
+    assert response.results == []
+    assert _tiers(response) == [("source", "failed")]
+    assert "wall" in response.detail
+    assert algolia.execute_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_a_docs_page_about_walls_is_not_treated_as_a_wall(
+    _noop_ssrf_guard: None,
+) -> None:
+    """ "Challenge handling" is a page title, not a challenge page."""
+    body = " ".join(
+        f"Section {i} explains challenge handling and how python settles pages."
+        for i in range(60)
+    )
+    browser = _FakeBrowser(
+        html=f"<html><head><title>Challenge handling</title></head>"
+        f"<body><h1>Challenge handling</h1><p>{body}</p></body></html>"
+    )
+    text = TextTier()
+    service = _make_service_with_tiers(browser, [text])
+
+    response = await service.search(
+        url="https://docs.example/challenges", query="python"
+    )
+
+    assert response.status == "ok"
+    assert response.results
+
+
+def test_page_wall_needs_both_a_wall_heading_and_a_thin_page() -> None:
+    assert _page_wall(_fixture("site/captcha.html"), "https://example.com/")
+    assert _page_wall(
+        "<html><head><title>Just a moment</title></head><body>thin</body></html>",
+        "https://example.com/",
+    )
+    assert (
+        _page_wall(
+            "<html><head><title>Guide</title></head><body><p>captcha</p></body></html>",
+            "https://example.com/guide",
+        )
+        is None
+    )
+    assert (
+        _page_wall(
+            "<html><head><title>Captcha reference</title></head><body><p>"
+            + "reference text. " * 300
+            + "</p></body></html>",
+            "https://example.com/captcha",
+        )
+        is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_form_tier_landing_on_a_wall_is_a_failed_tier(
+    _noop_ssrf_guard: None,
+) -> None:
+    """The site's own search endpoint refused; that is not an empty index."""
+    browser = _FakeBrowser(html="<html><body>src</body></html>")
+    form = _FakeTier(
+        "form",
+        hit=object(),
+        results=TierExecutionResult(
+            results=[],
+            results_url="https://example.com/?q=python",
+            wall="just a moment",
+        ),
+    )
+    text = _FakeTier("text", hit=object(), results=[])
+    service = _make_service_with_tiers(browser, [form, text])
+
+    response = await service.search(url="https://example.com/", query="python")
+
+    assert _tiers(response) == [("form", "failed"), ("text", "empty")]
+    assert response.status == "unavailable"
+    assert response.next_action == "fetch_directly"

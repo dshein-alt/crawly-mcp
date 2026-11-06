@@ -27,13 +27,16 @@ from patchright.async_api import (
 from pydantic import ValidationError
 
 from crawly_mcp.browser import BrowserManager
+from crawly_mcp.challenge import CHALLENGE_MARKERS
 from crawly_mcp.constants import (
     FETCH_PAGE_TIMEOUT_SECONDS,
     FETCH_TOTAL_TIMEOUT_SECONDS,
     MAX_SEARCH_RESULTS,
     PAGE_SEARCH_SNIPPET_CONTEXT_CHARS,
     PAGE_SEARCH_TIER_TIMEOUT_SECONDS,
+    PAGE_SEARCH_WALL_MAX_TEXT_CHARS,
     NextAction,
+    PageSearchTier,
     ToolStatus,
 )
 from crawly_mcp.errors import (
@@ -70,6 +73,10 @@ class TextHit:
 class TierExecutionResult:
     results: list[PageSearchResult]
     results_url: str | None = None
+    # Names a challenge/CAPTCHA page the tier landed on, if any. A wall that
+    # returns no results is not a search that found nothing, and the tier
+    # verdict has to say which of the two it just saw.
+    wall: str | None = None
 
 
 class TextTier:
@@ -211,6 +218,7 @@ class OpenSearchTier:
         return TierExecutionResult(
             results=_snippets_from_html(html, query, base_url=results_url),
             results_url=results_url,
+            wall=_page_wall(html, results_url),
         )
 
     @staticmethod
@@ -419,6 +427,7 @@ class FormTier:
         return TierExecutionResult(
             results=_snippets_from_html(html, query, base_url=results_url),
             results_url=results_url,
+            wall=_page_wall(html, results_url),
         )
 
     @staticmethod
@@ -532,84 +541,17 @@ class PageSearchService:
                 source_html = await self._fetch_source_html(request.url)
                 attempted: list[TierAttempt] = []
 
-                for tier in self._tiers:
-                    if tier.name == "text":
-                        break
-                    hit = tier.detect(source_html, request.url)
-                    if hit is None:
-                        attempted.append(
-                            TierAttempt(
-                                tier=tier.name,
-                                outcome="unavailable",
-                                detail=(f"site exposes no {tier.name} search facility"),
-                            )
-                        )
-                        continue
-                    try:
-                        outcome = await asyncio.wait_for(
-                            tier.execute(hit, request.query),
-                            PAGE_SEARCH_TIER_TIMEOUT_SECONDS,
-                        )
-                    except TimeoutError:
-                        logger.warning("page_search tier={} timed out", tier.name)
-                        attempted.append(
-                            TierAttempt(
-                                tier=tier.name,
-                                outcome="failed",
-                                detail=(
-                                    f"site search facility timed out after "
-                                    f"{PAGE_SEARCH_TIER_TIMEOUT_SECONDS}s"
-                                ),
-                            )
-                        )
-                        continue
-                    except Exception as exc:
-                        logger.warning(
-                            "page_search tier={} failed: {}: {}",
-                            tier.name,
-                            type(exc).__name__,
-                            exc,
-                        )
-                        attempted.append(
-                            TierAttempt(
-                                tier=tier.name,
-                                outcome="failed",
-                                detail=f"{type(exc).__name__}: {exc}"[:200],
-                            )
-                        )
-                        continue
-                    results, results_url = self._normalize_tier_outcome(outcome)
-                    if results:
-                        attempted.append(
-                            TierAttempt(
-                                tier=tier.name,
-                                outcome="ok",
-                                detail=f"{len(results)} result(s)",
-                            )
-                        )
-                        return self._respond(
-                            mode=tier.name,
-                            status="ok",
-                            next_action="none",
-                            detail=(
-                                f"{tier.name} site search returned "
-                                f"{len(results)} result(s)"
-                            ),
-                            attempted=attempted,
-                            source_url=request.url,
-                            results_url=results_url,
-                            results=results,
-                        )
-                    attempted.append(
-                        TierAttempt(
-                            tier=tier.name,
-                            outcome="empty",
-                            detail=(
-                                "site search facility answered with no results "
-                                "for this query"
-                            ),
-                        )
-                    )
+                source_wall = _page_wall(source_html, request.url)
+                if source_wall is not None:
+                    # Nothing below can be trusted: a wall answers every query
+                    # with an empty page, and calling that "no results on this
+                    # site" sends the caller away from a site that may say
+                    # plenty about the topic.
+                    return self._source_wall_response(request.url, source_wall)
+
+                won = await self._cascade_facilities(request, source_html, attempted)
+                if won is not None:
+                    return won
 
                 text_tier = self._tiers[-1]
                 hit = text_tier.detect(source_html, request.url)
@@ -672,6 +614,117 @@ class PageSearchService:
             return outcome.results, outcome.results_url
         return outcome, None
 
+    async def _cascade_facilities(
+        self,
+        request: PageSearchRequest,
+        source_html: str,
+        attempted: list[TierAttempt],
+    ) -> PageSearchResponse | None:
+        """Try each site search facility in order, recording every one.
+
+        Returns the winning response, or None when no facility produced
+        results — and `attempted` then says what each facility did, which is
+        what separates a site with nothing on the topic from a site that
+        refused to be searched.
+        """
+        for tier in self._tiers:
+            if tier.name == "text":
+                break
+            hit = tier.detect(source_html, request.url)
+            if hit is None:
+                attempted.append(
+                    TierAttempt(
+                        tier=tier.name,
+                        outcome="unavailable",
+                        detail=(f"site exposes no {tier.name} search facility"),
+                    )
+                )
+                continue
+            try:
+                outcome = await asyncio.wait_for(
+                    tier.execute(hit, request.query),
+                    PAGE_SEARCH_TIER_TIMEOUT_SECONDS,
+                )
+            except TimeoutError:
+                logger.warning("page_search tier={} timed out", tier.name)
+                attempted.append(
+                    TierAttempt(
+                        tier=tier.name,
+                        outcome="failed",
+                        detail=(
+                            f"site search facility timed out after "
+                            f"{PAGE_SEARCH_TIER_TIMEOUT_SECONDS}s"
+                        ),
+                    )
+                )
+                continue
+            except Exception as exc:
+                logger.warning(
+                    "page_search tier={} failed: {}: {}",
+                    tier.name,
+                    type(exc).__name__,
+                    exc,
+                )
+                attempted.append(
+                    TierAttempt(
+                        tier=tier.name,
+                        outcome="failed",
+                        detail=f"{type(exc).__name__}: {exc}"[:200],
+                    )
+                )
+                continue
+            results, results_url = self._normalize_tier_outcome(outcome)
+            if results:
+                attempted.append(
+                    TierAttempt(
+                        tier=tier.name, outcome="ok", detail=f"{len(results)} result(s)"
+                    )
+                )
+                return self._respond(
+                    mode=tier.name,
+                    status="ok",
+                    next_action="none",
+                    detail=f"{tier.name} site search returned {len(results)} result(s)",
+                    attempted=attempted,
+                    source_url=request.url,
+                    results_url=results_url,
+                    results=results,
+                )
+            attempted.append(_empty_tier_attempt(tier.name, outcome, results_url))
+        return None
+
+    def _source_wall_response(
+        self, source_url: str, source_wall: str
+    ) -> PageSearchResponse:
+        """Say the site refused us, in as many words.
+
+        A wall answers every query with an empty page. Reporting that as
+        `no_results` sends the caller off to reword a query that was never run.
+        """
+        logger.warning(
+            "page_search source is a wall url={} kind={}", source_url, source_wall
+        )
+        return self._respond(
+            mode="text",
+            status="blocked",
+            next_action="retry_later",
+            detail=(
+                f"target page is a {source_wall} wall, so nothing was searched; "
+                "the site refused the request rather than answering it. Retry "
+                "later, or fetch a specific page on the site directly."
+            ),
+            attempted=[
+                TierAttempt(
+                    tier="source",
+                    outcome="failed",
+                    detail=f"target page served a {source_wall} wall",
+                )
+            ],
+            source_url=source_url,
+            results_url=None,
+            results=[],
+        )
+
     def _respond(
         self,
         *,
@@ -696,6 +749,63 @@ class PageSearchService:
             truncated=False,
         )
         return _truncate_page_search_response(response)
+
+
+def _page_wall(html: str, url: str) -> str | None:
+    """Name the wall a page served us, if it served one, else None.
+
+    Deliberately stricter than the fetch path's challenge detector, which only
+    has to decide whether to wait a moment and re-read. This verdict tells a
+    caller a site refused to be searched, so it fires only when the page's own
+    heading positions name a wall *and* the page is thin: a wall announces
+    itself in the title and has nothing else to say. A docs page titled
+    "Challenge handling" with 5 KiB of prose is content, not a wall, and a
+    false positive here reports a searchable site as refused.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    positions: list[str] = []
+    if soup.title:
+        positions.append(soup.title.get_text(" ", strip=True))
+    for heading in soup.find_all(["h1", "h2"]):
+        positions.append(heading.get_text(" ", strip=True))
+    positions.append(urlsplit(url)._replace(query="", fragment="").geturl())
+    probe = " ".join(positions).lower()
+
+    for marker in CHALLENGE_MARKERS:
+        if marker in probe:
+            if len(soup.get_text(" ", strip=True)) > PAGE_SEARCH_WALL_MAX_TEXT_CHARS:
+                return None
+            return marker
+    return None
+
+
+def _empty_tier_attempt(
+    tier_name: PageSearchTier,
+    outcome: TierExecutionResult,
+    results_url: str | None,
+) -> TierAttempt:
+    """Record a tier that produced nothing, saying which kind of nothing it was.
+
+    A facility that answered with no results and a facility that was refused by
+    a wall look the same from the outside and mean the opposite for the caller:
+    one is a site with nothing on the topic, the other is a site that would not
+    answer. The distinction has to survive into `attempted`.
+    """
+    wall = outcome.wall
+    if wall is not None:
+        return TierAttempt(
+            tier=tier_name,
+            outcome="failed",
+            detail=(
+                f"site search facility landed on a {wall} wall at {results_url}; "
+                "it refused the search rather than answering it"
+            ),
+        )
+    return TierAttempt(
+        tier=tier_name,
+        outcome="empty",
+        detail="site search facility answered with no results for this query",
+    )
 
 
 def _empty_verdict(attempted: list[TierAttempt]) -> tuple[ToolStatus, NextAction, str]:

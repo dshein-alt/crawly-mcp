@@ -208,5 +208,14 @@ DEFAULT_SEARCH_PROVIDER_ORDER: tuple[SearchProvider, ...] = (
 )
 
 PageSearchMode = Literal["algolia", "opensearch", "readthedocs", "form", "text"]
+
+# `source` is not a search facility: it names the page we were handed, so a
+# wall on the source page can be reported without inventing a tier.
+PageSearchTier = Literal[
+    "source", "algolia", "opensearch", "readthedocs", "form", "text"
+]
 PAGE_SEARCH_TIER_TIMEOUT_SECONDS = 10
 PAGE_SEARCH_SNIPPET_CONTEXT_CHARS = 240
+# A wall announces itself in the title and has nothing else to say. Past this
+# many characters of text, a page is content that mentions a wall, not a wall.
+PAGE_SEARCH_WALL_MAX_TEXT_CHARS = 1500
