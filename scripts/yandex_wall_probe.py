@@ -2,8 +2,8 @@
 
 Yandex serves two walls, and only one of them is a refusal. `/showcaptchafast`
 runs a script that submits a browser fingerprint to `/checkcaptchafast`, which
-redirects to the results page named in `retpath`; about a second after
-navigation it lands on the results, or on `/showcaptcha`, the SmartCaptcha
+redirects to the results page named in `retpath`; it lands on the results,
+or on `/showcaptcha`, the SmartCaptcha
 checkbox that asks a human to click and does not move. Reading the page once
 reports `blocked` on a page that was about to answer.
 
@@ -60,11 +60,14 @@ async def _read(page: Any) -> tuple[str, str]:
     return "", ""
 
 
-async def _sample(page: Any, query: str, at: float) -> dict[str, Any]:
+async def _sample(
+    page: Any, query: str, *, started: float, scheduled_offset: float
+) -> dict[str, Any]:
     title, html = await _read(page)
     evidence = classify_search_page("yandex", page.url, title, html, query=query)
     return {
-        "t": at,
+        "t": time.monotonic() - started,
+        "scheduled_offset": scheduled_offset,
         "wall": wall_of(page.url),
         "kind": evidence.kind,
         "anchors": evidence.result_anchors + evidence.opaque_anchors,
@@ -87,17 +90,19 @@ async def _trajectory(
             with contextlib.suppress(Exception):
                 await manager.goto(page, PROVIDER_HOMEPAGE["yandex"], timeout_ms=8000)
         await asyncio.sleep(0.6)
-        started = time.monotonic()
         with contextlib.suppress(Exception):
             await manager.goto(
                 page, build_search_url("yandex", query), timeout_ms=15000
             )
+        started = time.monotonic()
         samples: list[dict[str, Any]] = []
         for offset in offsets:
             target = started + offset
             while (remaining := target - time.monotonic()) > 0:
                 await asyncio.sleep(min(remaining, 0.05))
-            samples.append(await _sample(page, query, offset))
+            samples.append(
+                await _sample(page, query, started=started, scheduled_offset=offset)
+            )
         return samples
     finally:
         with contextlib.suppress(Exception):
@@ -110,13 +115,18 @@ async def _trajectory(
 def _report(query: str, samples: list[dict[str, Any]]) -> None:
     first = samples[0]
     landed = next(
-        (s["t"] for s in samples if s["wall"] == "results" and s["anchors"]), None
+        (s["t"] for s in samples if s["kind"] == "results" and s["anchors"]), None
     )
     verdict = "ANSWERED" if landed is not None else "STUCK"
     print(
         f"  {query[:22]:24} t0={first['wall']:12} -> {verdict:8} resolved_at={landed}"
     )
-    print("      " + "  ".join(f"{s['t']}:{s['wall']}/{s['anchors']}" for s in samples))
+    print(
+        "      "
+        + "  ".join(
+            f"{s['t']:.3f}:{s['wall']}/{s['kind']}/{s['anchors']}" for s in samples
+        )
+    )
 
 
 def _summarize(runs: list[list[dict[str, Any]]]) -> None:
@@ -127,7 +137,7 @@ def _summarize(runs: list[list[dict[str, Any]]]) -> None:
         if not subset:
             continue
         resolved = [
-            next((s["t"] for s in r if s["wall"] == "results" and s["anchors"]), None)
+            next((s["t"] for s in r if s["kind"] == "results" and s["anchors"]), None)
             for r in subset
         ]
         times = sorted(t for t in resolved if t is not None)
