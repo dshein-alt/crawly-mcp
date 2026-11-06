@@ -208,8 +208,8 @@ def test_search_tool_schema_advertises_provider_enum_and_descriptions() -> None:
     for branch in provider_schema.get("anyOf", [provider_schema]):
         if "enum" in branch:
             found_enum.update(branch["enum"])
-    assert found_enum == set(ALLOWED_PROVIDERS), (
-        f"provider tool schema missing enum {set(ALLOWED_PROVIDERS)}; "
+    assert found_enum == set(ALLOWED_PROVIDERS) | {"auto"}, (
+        f"provider tool schema missing enum {set(ALLOWED_PROVIDERS)} or 'auto'; "
         f"got {provider_schema!r}"
     )
     assert provider_schema.get("description"), (
@@ -221,7 +221,7 @@ def test_search_tool_schema_advertises_provider_enum_and_descriptions() -> None:
             f"{allowed!r} missing from provider description: "
             f"{provider_schema['description']!r}"
         )
-    assert provider_schema.get("default") == "duckduckgo"
+    assert provider_schema.get("default") == "auto"
 
     context_schema = schema["properties"]["context"]
     assert context_schema.get("description"), (
@@ -270,3 +270,50 @@ def test_fetch_tool_description_recommends_text_for_prose_answers() -> None:
 
     assert '`content_format="text"`' in description
     assert "final prose answers" in description
+
+
+def test_all_four_tools_are_advertised() -> None:
+    async def _run() -> set[str]:
+        server = create_server()
+        return {tool.name for tool in await server.list_tools()}
+
+    assert asyncio.run(_run()) == {"search", "fetch", "page_search", "providers"}
+
+
+def test_tool_descriptions_teach_the_status_contract() -> None:
+    """A model reads tool descriptions, not the source.
+
+    The contract that an empty result is not evidence of an empty web has to
+    be stated where the model will actually see it.
+    """
+
+    async def _run() -> dict[str, str]:
+        server = create_server()
+        return {tool.name: tool.description or "" for tool in await server.list_tools()}
+
+    descriptions = asyncio.run(_run())
+    assert "no_results" in descriptions["search"]
+    assert "not evidence that the topic is empty" in descriptions["search"]
+    assert "suggested_providers" in descriptions["search"]
+    assert "Partial success is normal" in descriptions["fetch"]
+    assert "refine_query" in descriptions["page_search"]
+
+
+def test_server_instructions_state_the_empty_is_not_absent_rule() -> None:
+    server = create_server()
+    instructions = server._mcp_server.create_initialization_options().instructions or ""
+    assert "status" in instructions
+    assert "NOT" in instructions
+    assert "Use tools silently" in instructions
+
+
+def test_providers_tool_takes_no_arguments() -> None:
+    async def _run() -> dict:
+        server = create_server()
+        for tool in await server.list_tools():
+            if tool.name == "providers":
+                return tool.inputSchema
+        raise AssertionError("providers tool missing from list_tools()")
+
+    schema = asyncio.run(_run())
+    assert schema.get("properties") == {}
