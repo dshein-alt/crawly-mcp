@@ -1,14 +1,21 @@
 from __future__ import annotations
 
+import asyncio
+import socket
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
 from bs4 import BeautifulSoup
-from patchright.async_api import Error as PlaywrightError
+from patchright.async_api import (
+    Error as PlaywrightError,
+    TimeoutError as PlaywrightTimeoutError,
+)
 
-from crawly_mcp.errors import InvalidInputError, NavigationFailedError, URLSafetyError
+from crawly_mcp.errors import InvalidInputError, NavigationFailedError
+from crawly_mcp.mcp_server import create_server
 from crawly_mcp.models import (
     PageSearchResponse,
     PageSearchResult,
@@ -422,6 +429,10 @@ async def test_form_tier_execute_preserves_parameter_name_case() -> None:
     assert "Query=hello+world" in captured[0] or "Query=hello%20world" in captured[0]
 
 
+class _FakePage(SimpleNamespace):
+    __hash__ = object.__hash__
+
+
 class _FakeBrowser:
     def __init__(
         self,
@@ -469,7 +480,7 @@ class _FakeBrowser:
                 async def route(pattern, handler):
                     del pattern, handler
 
-                return SimpleNamespace(
+                return _FakePage(
                     content=content,
                     close=close,
                     goto=goto,
@@ -676,8 +687,11 @@ async def test_search_ssrf_rejects_private_url() -> None:
     service = PageSearchService(
         browser_manager=browser, http_client_factory=httpx.AsyncClient
     )
-    with pytest.raises(URLSafetyError):
-        await service.search(url="http://127.0.0.1/", query="hello")
+    response = await service.search(url="http://127.0.0.1/", query="hello")
+    assert response.status == "unsafe_url"
+    assert response.next_action == "report_to_user"
+    assert _tiers(response) == [("source", "failed")]
+    assert browser.close_calls == 0
 
 
 def _response_with(n_snippets: int, snippet: str) -> PageSearchResponse:
@@ -916,3 +930,92 @@ async def test_form_tier_marks_a_wall_on_its_own_results_page() -> None:
 
     assert outcome.wall == "checking your browser"
     assert outcome.results  # it did extract the wall's copy as a snippet
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error", "status"),
+    [
+        (PlaywrightError("connection refused"), "navigation_failed"),
+        (PlaywrightTimeoutError("page timed out"), "timeout"),
+    ],
+)
+async def test_source_failure_returns_an_outcome(
+    _noop_ssrf_guard: None, error: Exception, status: str
+) -> None:
+    browser = _FakeBrowser(html="", navigate_raises=error)
+    response = await PageSearchService(browser).search(
+        url="https://example.com/", query="python"
+    )
+    assert response.status == status
+    assert response.next_action == "retry_later"
+    assert response.results == []
+    assert _tiers(response) == [("source", "failed")]
+    assert browser.close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_overall_timeout_returns_an_outcome(
+    _noop_ssrf_guard: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("crawly_mcp.page_search.FETCH_TOTAL_TIMEOUT_SECONDS", 0)
+    service = PageSearchService(_FakeBrowser(html=""))
+
+    async def pending_fetch(url: str) -> str:
+        del url
+        await asyncio.Future()
+        return ""
+
+    monkeypatch.setattr(service, "_fetch_source_html", pending_fetch)
+    response = await service.search(url="https://example.com/", query="python")
+    assert response.status == "timeout"
+    assert response.next_action == "retry_later"
+    assert _tiers(response) == [("source", "failed")]
+
+
+@pytest.mark.asyncio
+async def test_source_failure_is_structured_on_the_mcp_surface(
+    _noop_ssrf_guard: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    browser = _FakeBrowser(html="", navigate_raises=PlaywrightError("offline"))
+    monkeypatch.setattr("crawly_mcp.mcp_server.BrowserManager", lambda: browser)
+    _, payload = await create_server().call_tool(
+        "page_search", {"url": "https://example.com/", "query": "python"}
+    )
+    assert payload["status"] == "navigation_failed"
+    assert payload["next_action"] == "retry_later"
+    assert payload["attempted"][0]["tier"] == "source"
+
+
+@pytest.mark.asyncio
+async def test_context_creation_failure_returns_an_outcome(
+    _noop_ssrf_guard: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    browser = _FakeBrowser(html="")
+    monkeypatch.setattr(
+        browser, "new_context", AsyncMock(side_effect=PlaywrightError("disconnected"))
+    )
+    response = await PageSearchService(browser).search(
+        url="https://example.com/", query="python"
+    )
+    assert response.status == "navigation_failed"
+    assert response.next_action == "retry_later"
+    assert _tiers(response) == [("source", "failed")]
+
+
+@pytest.mark.asyncio
+async def test_dns_failure_returns_a_navigation_outcome(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "crawly_mcp.security.asyncio.to_thread",
+        AsyncMock(side_effect=socket.gaierror("host not found")),
+    )
+    browser = _FakeBrowser(html="")
+    response = await PageSearchService(browser).search(
+        url="https://missing.example/", query="python"
+    )
+    assert response.status == "navigation_failed"
+    assert response.next_action == "retry_later"
+    assert _tiers(response) == [("source", "failed")]
+    assert browser.close_calls == 0

@@ -40,9 +40,12 @@ from crawly_mcp.constants import (
     ToolStatus,
 )
 from crawly_mcp.errors import (
+    BrowserUnavailableError,
     InvalidInputError,
     NavigationFailedError,
     TimeoutExceededError,
+    WebSearchError,
+    next_action_for,
 )
 from crawly_mcp.models import (
     PageSearchRequest,
@@ -482,8 +485,11 @@ class PageSearchService:
                     await self._settle_client_search_page(page)
                     html = await page.content()
             except PlaywrightTimeoutError as exc:
-                raise NavigationFailedError(f"source fetch timed out: {exc}") from exc
+                raise TimeoutExceededError(f"source fetch timed out: {exc}") from exc
             except PlaywrightError as exc:
+                blocked = guard.pop_blocked_error(page)
+                if blocked is not None:
+                    raise blocked from exc
                 raise NavigationFailedError(f"source fetch failed: {exc}") from exc
             else:
                 return html
@@ -531,15 +537,14 @@ class PageSearchService:
         except ValidationError as exc:
             raise InvalidInputError(str(exc.errors()[0]["msg"])) from exc
 
-        await URLSafetyGuard().validate_user_url(request.url)
-
         logger.info("page_search entry url={!r} query={!r}", request.url, request.query)
         started = asyncio.get_running_loop().time()
+        attempted: list[TierAttempt] = []
 
         try:
             async with asyncio.timeout(FETCH_TOTAL_TIMEOUT_SECONDS):
+                await URLSafetyGuard().validate_user_url(request.url)
                 source_html = await self._fetch_source_html(request.url)
-                attempted: list[TierAttempt] = []
 
                 source_wall = _page_wall(source_html, request.url)
                 if source_wall is not None:
@@ -598,10 +603,23 @@ class PageSearchService:
                     results_url=text_results_url,
                     results=[],
                 )
-        except TimeoutError as exc:
-            raise TimeoutExceededError(
-                "page_search exceeded the overall timeout"
-            ) from exc
+        except TimeoutError:
+            return self._failure_response(
+                request.url,
+                TimeoutExceededError("page_search exceeded the overall timeout"),
+                attempted,
+            )
+        except BrowserUnavailableError:
+            raise
+        except (WebSearchError, PlaywrightError) as exc:
+            error = (
+                NavigationFailedError(f"source fetch failed: {exc}")
+                if isinstance(exc, PlaywrightError)
+                else exc
+            )
+            if error.error_type in ("invalid_input", "invalid_url"):
+                raise
+            return self._failure_response(request.url, error, attempted)
         finally:
             duration = asyncio.get_running_loop().time() - started
             logger.info("page_search done duration={:.2f}s", duration)
@@ -700,6 +718,21 @@ class PageSearchService:
                 )
             attempted.append(_empty_tier_attempt(tier.name, outcome, results_url))
         return None
+
+    def _failure_response(
+        self, source_url: str, error: WebSearchError, attempted: list[TierAttempt]
+    ) -> PageSearchResponse:
+        return self._respond(
+            mode="text",
+            status=error.status,
+            next_action=next_action_for(error.error_type, tool="fetch"),
+            detail=error.message,
+            attempted=attempted
+            or [TierAttempt(tier="source", outcome="failed", detail=error.message)],
+            source_url=source_url,
+            results_url=None,
+            results=[],
+        )
 
     def _source_wall_response(
         self, source_url: str, source_wall: str
