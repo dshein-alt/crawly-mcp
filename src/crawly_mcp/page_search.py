@@ -253,6 +253,17 @@ class OpenSearchTier:
         return out
 
 
+_PAGE_ZERO_RESULT_MARKERS = (
+    "no results matching the query",
+    "did not match any documents",
+)
+
+
+def _states_zero_results(soup: BeautifulSoup) -> bool:
+    text = re.sub(r"\s+", " ", soup.get_text(" ", strip=True)).lower()
+    return any(marker in text for marker in _PAGE_ZERO_RESULT_MARKERS)
+
+
 def _snippets_from_html(
     html: str,
     query: str,
@@ -260,6 +271,8 @@ def _snippets_from_html(
     base_url: str | None = None,
 ) -> list[PageSearchResult]:
     soup = BeautifulSoup(html, "html.parser")
+    if _states_zero_results(soup):
+        return []
     linked_results = _linked_results_from_search_html(soup, base_url=base_url)
     if linked_results:
         return linked_results

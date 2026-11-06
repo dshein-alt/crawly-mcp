@@ -67,10 +67,10 @@ RESULT_CONTAINERS = {
     "yandex": ["li.serp-item", "div.organics-item2", "div.serp-item"],
 }
 
-# Result links whose target is not present in the markup. Google now routes
-# organic titles through `/goto?url=<opaque>`, which only resolves on click, so
-# the target URL cannot be read from the page. These are counted and reported
-# as an unparseable results page instead of being guessed at.
+# Result links whose target is not present in the markup. Google routes organic
+# titles through `/goto?url=<opaque>`; the redirect response supplies the real
+# destination. Count these separately so the service can resolve them without
+# reconstructing URLs from display text.
 OPAQUE_RESULT_PATHS = ("/goto?url=",)
 
 SEARCH_CONSENT_MARKERS = {
@@ -448,6 +448,25 @@ def extract_search_results(provider: str, html: str, base_url: str) -> list[str]
             provider,
             len(html),
         )
+    return urls
+
+
+def extract_opaque_result_urls(provider: str, html: str, base_url: str) -> list[str]:
+    """Return result redirect URLs whose destinations require resolution."""
+    soup = BeautifulSoup(html, "html.parser")
+    seen: set[str] = set()
+    urls: list[str] = []
+    for anchor in _result_anchors(soup, provider):
+        href = anchor.get("href") or ""
+        absolute = urljoin(base_url, href)
+        if not any(path in absolute for path in OPAQUE_RESULT_PATHS):
+            continue
+        if absolute in seen:
+            continue
+        seen.add(absolute)
+        urls.append(absolute)
+        if len(urls) >= MAX_SEARCH_RESULTS:
+            break
     return urls
 
 

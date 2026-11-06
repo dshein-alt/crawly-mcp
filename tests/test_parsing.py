@@ -337,10 +337,10 @@ def test_captcha_page_is_classified_as_a_wall() -> None:
 
 
 def test_goto_only_results_page_reports_unextractable_urls() -> None:
-    """Google routes organic titles through /goto?url=, whose target is opaque.
+    """Static parsing counts opaque links without inventing their targets.
 
-    Counting those links and saying so is honest; guessing at their targets is
-    not, and neither is reporting the page as empty.
+    The service resolves the real redirect responses separately; the parser
+    itself must neither guess targets nor report the results page as empty.
     """
     html = _fixture("google_goto_only.html")
     evidence = classify_search_page(

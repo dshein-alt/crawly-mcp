@@ -4,6 +4,26 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.3] - 2026-11-06
+
+### Fixed
+
+- Resolve Google's `/goto?url=` click-through result redirects to their real destination URLs.
+- Honor zero-result statements on site-search pages before extracting OpenSearch or form results.
+
+## [0.4.2] - 2026-11-06
+
+### Fixed
+
+- Expose provider order, exclusion, and attempt-limit settings in the SearXNG Compose example and document their `.env` usage.
+
+## [0.4.1] - 2026-11-06
+
+### Fixed
+
+- Pin the release fingerprint check to Ubuntu 24.04 so Patchright can install Chromium after `ubuntu-latest` moved to 26.04.
+- Upgrade CI actions to releases that run natively on Node.js 24.
+
 ## [0.4.0] - 2026-11-06
 
 Make every tool result say what happened and what to do next, so a caller can tell "the web has nothing on this" apart from "this provider could not answer" without a human pushing it to try another provider.
@@ -27,7 +47,6 @@ Make every tool result say what happened and what to do next, so a caller can te
 - **Breaking:** `page_search`'s `attempted` is a list of per-tier entries (`tier`, `outcome`, `detail`) with outcomes `ok`, `empty`, `failed`, `unavailable`, replacing the list of tier names.
 - A zero-hit results page can no longer yield result URLs. Result links are harvested only from result containers, and a page that states it found nothing is reported as `no_results` whatever its DOM contains. Previously DuckDuckGo's zero-hit page chrome was returned as five plausible, unrelated URLs.
 - A page that never reached a results view (DuckDuckGo's "redirecting to the non-JavaScript site" interstitial, Google's redirect interstitial) is reported as `unavailable` and cascades, instead of looking like an empty web.
-- A results page whose links carry no extractable targets (Google's `/goto?url=` click-through redirects) is reported as unparseable with the count, instead of being reported empty.
 - Google result extraction follows the current SERP markup (`div.yuRUbf a`, `a.zReHs`), replacing selectors that matched nothing.
 - `page_search` matches multi-word queries as tokens ranked by coverage, preferring an exact phrase when present. Previously every multi-word query was matched as one literal string and returned nothing.
 - Site-search harvesting uses the page's results container only; a client-side search page that rendered nothing no longer reports its navigation bar as the top five hits.
@@ -41,9 +60,6 @@ Make every tool result say what happened and what to do next, so a caller can te
 - Keep short documentation about challenges and CAPTCHAs searchable while rejecting actual interstitials.
 - Continue provider cascading when SearXNG returns null results, malformed URLs, or malformed engine-failure metadata.
 - Continue provider cascading when browser context or tab creation fails, and close unused ephemeral contexts.
-- Pin the release fingerprint check to Ubuntu 24.04 so Patchright can install Chromium after `ubuntu-latest` moved to 26.04.
-- Upgrade CI actions to releases that run natively on Node.js 24.
-- Expose provider order, exclusion, and attempt-limit settings in the SearXNG Compose example and document their `.env` usage.
 
 ## [0.3.1] - 2026-05-12
 

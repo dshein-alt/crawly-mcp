@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 from patchright.async_api import (
     Error as PlaywrightError,
@@ -132,6 +133,48 @@ async def test_search_returns_extracted_urls_from_fixture(
         "https://example.org/beta",
         "https://example.net/gamma",
     ]
+
+
+@pytest.mark.asyncio
+async def test_google_opaque_result_redirects_are_resolved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    browser = FakeBrowserManager(
+        {
+            "https://www.google.com/search?q=python&hl=en": {
+                "title": "python - Google Search",
+                "html": (FIXTURES / "google_goto_only.html").read_text(
+                    encoding="utf-8"
+                ),
+            }
+        }
+    )
+    service = WebSearchService(browser)
+    targets = {
+        "CAESVAHEIkXXXUGWzJcP2zeQyIH": "https://www.python.org/",
+        "CAESXgHEIkXXCkMWKPqsa4ZieKsm8n": "https://docs.python.org/3/tutorial/",
+    }
+
+    def resolve_redirect(request: httpx.Request) -> httpx.Response:
+        target = targets[request.url.params["url"]]
+        return httpx.Response(302, headers={"Location": target})
+
+    service._http = httpx.AsyncClient(transport=httpx.MockTransport(resolve_redirect))
+    monkeypatch.setenv("CRAWLY_SEARCH_PROVIDER_ORDER", "google")
+    monkeypatch.setenv("CRAWLY_SEARCH_MAX_PROVIDERS", "1")
+
+    async def allow_all(self, url: str) -> None:
+        del self, url
+
+    monkeypatch.setattr(URLSafetyGuard, "validate_user_url", allow_all)
+
+    result = await service.search(provider="google", context="python")
+
+    await service.aclose()
+    assert result.status == "ok"
+    assert result.provider == "google"
+    assert result.urls == list(targets.values())
+    assert result.attempted[0].results == 2
 
 
 @pytest.mark.asyncio

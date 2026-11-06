@@ -77,7 +77,9 @@ from crawly_mcp.parsing import (
     SearchPageEvidence,
     build_search_url,
     classify_search_page,
+    extract_opaque_result_urls,
     extract_search_results,
+    normalize_result_url,
 )
 from crawly_mcp.searxng import searxng_search
 from crawly_mcp.security import URLSafetyGuard
@@ -690,7 +692,9 @@ class WebSearchService:
             evidence.marker,
             page.url,
         )
-        return self._verdict_from_evidence(provider, html, page.url, evidence, trace)
+        return await self._verdict_from_evidence(
+            provider, html, page.url, evidence, trace
+        )
 
     async def _prepare_provider_page(
         self,
@@ -741,7 +745,7 @@ class WebSearchService:
         trace.block_marker = evidence.marker
         trace.page_kind = evidence.kind
 
-    def _verdict_from_evidence(
+    async def _verdict_from_evidence(
         self,
         provider: str,
         html: str,
@@ -761,15 +765,77 @@ class WebSearchService:
             return [], evidence, final_url
 
         urls = extract_search_results(provider, html, final_url)
+        if not urls and evidence.opaque_anchors:
+            urls = await self._resolve_opaque_results(provider, html, final_url)
+            if urls:
+                evidence.result_anchors = len(urls)
+                evidence.detail = ""
         if not urls:
+            detail = (
+                evidence.detail or "results page exposed no extractable result URLs"
+            )
+            if evidence.opaque_anchors:
+                detail = (
+                    f"{evidence.opaque_anchors} result link(s) required click-through "
+                    "redirect resolution, but no destination could be resolved"
+                )
             raise ProviderUnavailableError(
-                evidence.detail or "results page exposed no extractable result URLs",
+                detail,
                 page_kind=evidence.kind,
                 landed_url=final_url,
             )
         if trace is not None:
             trace.results = urls
         return urls, evidence, final_url
+
+    async def _resolve_opaque_results(
+        self, provider: str, html: str, final_url: str
+    ) -> list[str]:
+        redirect_urls = extract_opaque_result_urls(provider, html, final_url)
+        guard = URLSafetyGuard()
+        resolved = await asyncio.gather(
+            *(
+                self._resolve_result_redirect(provider, url, final_url, guard)
+                for url in redirect_urls
+            )
+        )
+        return list(dict.fromkeys(url for url in resolved if url is not None))
+
+    async def _resolve_result_redirect(
+        self,
+        provider: str,
+        url: str,
+        final_url: str,
+        guard: URLSafetyGuard,
+    ) -> str | None:
+        try:
+            await guard.validate_user_url(url)
+            response = await self._get_http().get(url, follow_redirects=False)
+            if not response.is_redirect:
+                return None
+            location = response.headers.get("location")
+            if not location:
+                return None
+            target = normalize_result_url(
+                provider,
+                str(response.url.join(location)),
+                base_url=final_url,
+            )
+            if target is None:
+                return None
+            await guard.validate_user_url(target)
+        except (httpx.HTTPError, URLSafetyError, ValueError) as exc:
+            logger.debug(
+                "result redirect resolution failed provider={} url={!r} "
+                "type={} message={}",
+                provider,
+                url,
+                type(exc).__name__,
+                exc,
+            )
+            return None
+        else:
+            return target
 
     async def _read_page(self, page: Any, provider: str) -> tuple[str, str]:
         """Read the landed page, turning a dead tab into a provider failure.

@@ -260,6 +260,40 @@ async def test_opensearch_tier_execute_extracts_linked_search_results(
     assert "Return the number" in result.snippet
 
 
+@pytest.mark.asyncio
+async def test_opensearch_zero_result_statement_suppresses_links_and_query_echo(
+    _noop_ssrf_guard: None,
+) -> None:
+    def _serve_descriptor(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(200, text=_OSD)
+
+    async def fake_fetch(url: str) -> str:
+        assert "q=zzqxvplm" in url
+        return """
+        <html><title>Search</title><body>
+          <div class="search-results">
+            <p>There were no results matching the query.</p>
+            <a href="/help">Search help for zzqxvplm</a>
+          </div>
+        </body></html>
+        """
+
+    tier = OpenSearchTier(
+        http_client_factory=lambda: httpx.AsyncClient(
+            transport=httpx.MockTransport(_serve_descriptor)
+        ),
+        page_fetcher=fake_fetch,
+    )
+
+    outcome = await tier.execute(
+        OpenSearchHit(descriptor_url="https://example.com/osd.xml"),
+        "zzqxvplm",
+    )
+
+    assert outcome.results == []
+
+
 def test_readthedocs_tier_detect_parses_slug_and_version() -> None:
     tier = ReadthedocsTier(http_client_factory=httpx.AsyncClient)
     hit = tier.detect("", "https://myproject.readthedocs.io/en/stable/guide/intro.html")
