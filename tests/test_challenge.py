@@ -6,9 +6,11 @@ from pathlib import Path
 import pytest
 
 from crawly_mcp.challenge import (
+    PageSnapshot,
     looks_like_challenge,
     resolve_fetch_content,
     settle_search_page,
+    snapshot_page,
 )
 from crawly_mcp.errors import ChallengeBlockedError
 from crawly_mcp.parsing import classify_search_page
@@ -162,6 +164,7 @@ async def test_settle_search_page_returns_the_results_the_check_redirected_to(
 
     snapshot, evidence = await settle_search_page(
         page,
+        initial=await snapshot_page(page),
         provider="yandex",
         query="python",
         classify=classify_search_page,
@@ -189,6 +192,7 @@ async def test_settle_search_page_stops_at_the_wall_that_asks_a_human(
 
     _, evidence = await settle_search_page(
         page,
+        initial=await snapshot_page(page),
         provider="yandex",
         query="python",
         classify=classify_search_page,
@@ -211,6 +215,7 @@ async def test_settle_search_page_never_waits_on_a_human_wall(
 
     _, evidence = await settle_search_page(
         page,
+        initial=await snapshot_page(page),
         provider="yandex",
         query="python",
         classify=classify_search_page,
@@ -235,6 +240,7 @@ async def test_settle_search_page_gives_up_within_its_window(
     started = loop.time()
     _, evidence = await settle_search_page(
         page,
+        initial=await snapshot_page(page),
         provider="yandex",
         query="python",
         classify=classify_search_page,
@@ -258,6 +264,7 @@ async def test_settle_search_page_skips_a_window_the_deadline_already_ate(
 
     _, evidence = await settle_search_page(
         page,
+        initial=await snapshot_page(page),
         provider="yandex",
         query="python",
         classify=classify_search_page,
@@ -268,3 +275,86 @@ async def test_settle_search_page_skips_a_window_the_deadline_already_ate(
 
     assert evidence.kind == "captcha"
     assert page.reads == 1
+
+
+@pytest.mark.asyncio
+async def test_settle_preserves_snapshot_when_a_page_read_stalls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    initial = PageSnapshot(*_wall_frames()[0])
+    page = _RealisticWallPage(_wall_frames())
+
+    async def stalled_content() -> str:
+        page._index = 1  # The URL changes before the new document can be read.
+        await asyncio.Event().wait()
+        return ""
+
+    monkeypatch.setattr(page, "content", stalled_content)
+    async with asyncio.timeout(0.3):
+        snapshot, evidence = await settle_search_page(
+            page,
+            initial=initial,
+            provider="yandex",
+            query="python",
+            classify=classify_search_page,
+            window_seconds=0.02,
+            sample_seconds=0.001,
+        )
+    assert snapshot is initial
+    assert snapshot.url != page.url
+    assert evidence.kind == "captcha"
+
+
+@pytest.mark.asyncio
+async def test_settle_waits_for_results_after_the_url_has_changed() -> None:
+    frames = _wall_frames()
+    frames.insert(1, (frames[1][0], frames[1][1], "<html><body>Loading</body></html>"))
+    page = _RealisticWallPage(frames)
+    snapshot, evidence = await settle_search_page(
+        page,
+        initial=await snapshot_page(page),
+        provider="yandex",
+        query="python",
+        classify=classify_search_page,
+        window_seconds=0.2,
+        sample_seconds=0.001,
+    )
+    assert evidence.kind == "results"
+    assert evidence.result_anchors > 0
+    assert snapshot.html == frames[-1][2]
+    assert page.reads == 3
+
+
+@pytest.mark.asyncio
+async def test_settle_propagates_external_cancellation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = _RealisticWallPage(_wall_frames())
+    entered = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def stalled_content() -> str:
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+        return ""
+
+    monkeypatch.setattr(page, "content", stalled_content)
+    task = asyncio.create_task(
+        settle_search_page(
+            page,
+            initial=PageSnapshot(*_wall_frames()[0]),
+            provider="yandex",
+            query="python",
+            classify=classify_search_page,
+            window_seconds=3.0,
+            sample_seconds=0.001,
+        )
+    )
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert cancelled.is_set()

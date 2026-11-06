@@ -88,6 +88,7 @@ async def resolve_fetch_content(
 async def settle_search_page(
     page: PageLike,
     *,
+    initial: PageSnapshot,
     provider: str,
     query: str,
     classify: ClassifyPage,
@@ -97,29 +98,17 @@ async def settle_search_page(
 ) -> tuple[PageSnapshot, SearchPageEvidence]:
     """Wait out a provider's own automatic check; report the page it ends on.
 
-    A provider that is mid-check serves a page that says it will carry on by
-    itself, and the check lands within about a second: it either reaches the
-    results page or reaches the wall that asks a human to click. Reading the
-    page once, as search used to, reports `blocked` on a page that was about to
-    answer, and names the transient interstitial as the wall.
-
-    The window closes on the first reading that is no longer mid-flight, so a
-    check that resolves costs one sample rather than the whole window, and a
-    wall that demands a human is reported as soon as it is seen. A read that
-    fails is a navigation in flight, not a failure of the search: the last good
-    reading is kept and the poll continues.
-
-    `deadline` is loop time, the provider attempt's own budget. A window that
-    would overrun it is not started at all, because a settle cancelled
-    mid-flight leaves the caller with a timeout in place of the answer the page
-    was about to give.
+    Start from the caller's last successful reading. Bound both polling sleeps
+    and page reads by `deadline` (loop time), retaining that reading if the next
+    read stalls or fails during navigation. Stop when results render or a human
+    verification wall appears. Cancellation by the caller still propagates.
     """
     loop = asyncio.get_running_loop()
     window_end = loop.time() + window_seconds
     if deadline is not None:
         window_end = min(window_end, deadline)
 
-    snapshot = await snapshot_page(page)
+    snapshot = initial
     evidence = classify(
         provider, snapshot.url, snapshot.title, snapshot.html, query=query
     )
@@ -138,14 +127,18 @@ async def settle_search_page(
         remaining = window_end - loop.time()
         if remaining <= 0:
             break
-        await asyncio.sleep(min(sample_seconds, remaining))
         try:
-            snapshot = await snapshot_page(page)
+            async with asyncio.timeout_at(window_end):
+                await asyncio.sleep(min(sample_seconds, remaining))
+                candidate = await snapshot_page(page)
+        except TimeoutError:
+            break
         except Exception as exc:  # a navigation in flight destroys the context
             logger.debug(
                 "settle read failed provider={} type={}", provider, type(exc).__name__
             )
             continue
+        snapshot = candidate
         samples += 1
         evidence = classify(
             provider, snapshot.url, snapshot.title, snapshot.html, query=query

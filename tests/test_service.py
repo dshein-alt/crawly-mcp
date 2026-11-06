@@ -1410,3 +1410,113 @@ async def test_a_walled_yandex_cascades_to_the_next_provider(
     assert resp.provider == "duckduckgo"
     assert resp.attempted[0].provider == "yandex"
     assert resp.attempted[0].status == "blocked"
+
+
+@pytest.fixture
+def yandex_auto_service(monkeypatch: pytest.MonkeyPatch) -> WebSearchService:
+    _allow_all(monkeypatch)
+    monkeypatch.setenv("CRAWLY_SEARCH_PROVIDER_ORDER", "yandex")
+    monkeypatch.setenv("CRAWLY_SEARCH_MAX_PROVIDERS", "1")
+    monkeypatch.setenv("CRAWLY_SEARCH_JITTER_MS", "0,0")
+    auto = _yandex_frames()[0]
+    return WebSearchService(
+        FakeBrowserManager(
+            {
+                YANDEX_SEARCH_URL: {
+                    "html": auto["html"],
+                    "title": auto["title"],
+                    "final_url": auto["url"],
+                }
+            }
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_settle_retries_navigation_errors_from_the_first_poll(
+    yandex_auto_service: WebSearchService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = FakePage.content
+    calls = 0
+
+    async def moving_content(self: FakePage) -> str:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise PlaywrightError("Execution context was destroyed during navigation")
+        if calls > 2:
+            self.url = YANDEX_SEARCH_URL
+            return (FIXTURES / "yandex_results.html").read_text(encoding="utf-8")
+        return await original(self)
+
+    monkeypatch.setattr(FakePage, "content", moving_content)
+    monkeypatch.setattr("crawly_mcp.service.SEARCH_WALL_SETTLE_SAMPLE_SECONDS", 0.001)
+    result = await yandex_auto_service.search(provider="yandex", context="python")
+    assert result.status == "ok"
+    assert result.attempted[0].final_url == YANDEX_SEARCH_URL
+    assert calls == 3
+
+
+@pytest.mark.asyncio
+async def test_stalled_settle_read_preserves_the_block_and_its_url(
+    yandex_auto_service: WebSearchService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = FakePage.content
+    monkeypatch.setattr(
+        "crawly_mcp.service.SEARCH_PROVIDER_ATTEMPT_TIMEOUT_SECONDS", 0.2
+    )
+    monkeypatch.setattr("crawly_mcp.service.SEARCH_WALL_SETTLE_CLEANUP_SECONDS", 0.02)
+    monkeypatch.setattr("crawly_mcp.service.SEARCH_WALL_SETTLE_SAMPLE_SECONDS", 0.001)
+    cancelled = asyncio.Event()
+
+    async def stalled_content(self: FakePage) -> str:
+        if self.reads:
+            self.url = YANDEX_SEARCH_URL
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+        return await original(self)
+
+    monkeypatch.setattr(FakePage, "content", stalled_content)
+    result = await yandex_auto_service.search(provider="yandex", context="python")
+    assert result.status == "blocked"
+    assert result.attempted[0].final_url == _yandex_frames()[0]["url"]
+    assert cancelled.is_set()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("navigation_seconds", [0.3, 0.45])
+async def test_settle_and_trace_share_the_provider_budget(
+    yandex_auto_service: WebSearchService,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    navigation_seconds: float,
+) -> None:
+    monkeypatch.setenv("CRAWLY_TRACE_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        "crawly_mcp.service.SEARCH_PROVIDER_ATTEMPT_TIMEOUT_SECONDS", 0.5
+    )
+    monkeypatch.setattr("crawly_mcp.service.SEARCH_WALL_SETTLE_CLEANUP_SECONDS", 0.02)
+    monkeypatch.setattr("crawly_mcp.service.SEARCH_WALL_SETTLE_SAMPLE_SECONDS", 0.005)
+    monkeypatch.setattr("crawly_mcp.service.OPAQUE_RESOLVE_CLEANUP_SECONDS", 0.01)
+    monkeypatch.setattr("crawly_mcp.service.TRACE_CAPTURE_TIMEOUT_SECONDS", 0.08)
+    original = yandex_auto_service._browser_manager.goto
+    trace_started = asyncio.Event()
+
+    async def slow_navigation(page: FakePage, url: str, *, timeout_ms: int) -> None:
+        await asyncio.sleep(navigation_seconds)
+        await original(page, url, timeout_ms=timeout_ms)
+
+    async def finalize(self: SearchTrace, page: FakePage, *, html: str | None) -> None:
+        trace_started.set()
+        await asyncio.sleep(0.07)
+
+    monkeypatch.setattr(yandex_auto_service._browser_manager, "goto", slow_navigation)
+    monkeypatch.setattr(SearchTrace, "finalize", finalize)
+    result = await yandex_auto_service.search(provider="yandex", context="python")
+    assert result.status == "blocked"
+    assert result.attempted[0].page_kind == "captcha"
+    assert trace_started.is_set()

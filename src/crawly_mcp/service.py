@@ -21,7 +21,7 @@ from patchright.async_api import (
 from pydantic import ValidationError
 
 from crawly_mcp.browser import BrowserManager, SearchContextHandle
-from crawly_mcp.challenge import resolve_fetch_content, settle_search_page
+from crawly_mcp.challenge import PageSnapshot, resolve_fetch_content, settle_search_page
 from crawly_mcp.constants import (
     ALLOWED_PROVIDERS,
     CHALLENGE_SETTLE_TIMEOUT_SECONDS,
@@ -674,8 +674,15 @@ class WebSearchService:
         finally:
             if trace is not None:
                 with suppress(Exception):
-                    async with asyncio.timeout(TRACE_CAPTURE_TIMEOUT_SECONDS):
-                        await trace.finalize(page, html=trace_html)
+                    trace_budget = min(
+                        TRACE_CAPTURE_TIMEOUT_SECONDS,
+                        deadline
+                        - asyncio.get_running_loop().time()
+                        - OPAQUE_RESOLVE_CLEANUP_SECONDS,
+                    )
+                    if trace_budget > 0:
+                        async with asyncio.timeout(trace_budget):
+                            await trace.finalize(page, html=trace_html)
             with suppress(Exception):
                 await page.close()
             # Persistent contexts stay cached for cookie continuity; ephemeral
@@ -727,13 +734,21 @@ class WebSearchService:
         await self._navigate_provider(handle, page, search_url)
 
         title, html = await self._read_page(page, provider)
-        evidence = classify_search_page(provider, page.url, title, html, query=query)
-        title, html, evidence, settled_s = await self._settle_wall(
-            page, provider, query, title, html, evidence, deadline=deadline
+        snapshot = PageSnapshot(url=page.url, title=title, html=html)
+        evidence = classify_search_page(
+            provider, snapshot.url, title, html, query=query
+        )
+        snapshot, evidence, settled_s = await self._settle_wall(
+            page,
+            provider,
+            query,
+            snapshot,
+            evidence,
+            deadline=deadline - (TRACE_CAPTURE_TIMEOUT_SECONDS if trace else 0),
         )
         if trace is not None:
             trace.wall_settled_s = settled_s
-        self._record_probe_trace(trace, page, title, evidence)
+        self._record_probe_trace(trace, snapshot.url, snapshot.title, evidence)
         logger.info(
             "search probe provider={} page_kind={} anchors={} opaque={} "
             "text_chars={} marker={!r} final_url={!r}",
@@ -743,10 +758,10 @@ class WebSearchService:
             evidence.opaque_anchors,
             evidence.text_chars,
             evidence.marker,
-            page.url,
+            snapshot.url,
         )
         return await self._verdict_from_evidence(
-            provider, html, page.url, evidence, trace, deadline=deadline
+            provider, snapshot.html, snapshot.url, evidence, trace, deadline=deadline
         )
 
     async def _settle_wall(
@@ -754,28 +769,19 @@ class WebSearchService:
         page: Any,
         provider: str,
         query: str,
-        title: str,
-        html: str,
+        snapshot: PageSnapshot,
         evidence: SearchPageEvidence,
         *,
         deadline: float,
-    ) -> tuple[str, str, SearchPageEvidence, float]:
+    ) -> tuple[PageSnapshot, SearchPageEvidence, float]:
         """Give a wall that promises to resolve itself the chance to do so.
 
-        A provider mid-check serves a page that says it will carry on, and the
-        check lands about a second later: on the results page, or on the wall
-        that asks a human to click. Classifying the first reading reports a
-        refusal on a page that was about to answer, and names the transient
-        interstitial as the wall. The settled reading is the page the provider
-        actually ended on, which is what the caller is told.
-
-        The window is capped by the provider attempt's own deadline, less the
-        time to read the settled page and answer, so a settle never turns a
-        wall into a timeout. A wall that asks a human to click is not waited
-        on at all, and costs nothing it did not cost before.
+        The caller has reserved trace capture time in `deadline`; leave room
+        for page cleanup too. Reuse the known snapshot when there is no budget
+        or a later read fails. Human verification walls return immediately.
         """
         if not evidence.mid_flight:
-            return title, html, evidence, 0.0
+            return snapshot, evidence, 0.0
 
         loop = asyncio.get_running_loop()
         window_end = min(
@@ -790,11 +796,12 @@ class WebSearchService:
                 evidence.kind,
                 evidence.marker,
             )
-            return title, html, evidence, 0.0
+            return snapshot, evidence, 0.0
 
         started = loop.time()
         snapshot, settled_evidence = await settle_search_page(
             page,
+            initial=snapshot,
             provider=provider,
             query=query,
             classify=classify_search_page,
@@ -803,7 +810,7 @@ class WebSearchService:
             deadline=window_end,
         )
         settled_s = round(loop.time() - started, 2)
-        return snapshot.title, snapshot.html, settled_evidence, settled_s
+        return snapshot, settled_evidence, settled_s
 
     async def _prepare_provider_page(
         self,
@@ -845,11 +852,14 @@ class WebSearchService:
 
     @staticmethod
     def _record_probe_trace(
-        trace: SearchTrace | None, page: Any, title: str, evidence: SearchPageEvidence
+        trace: SearchTrace | None,
+        final_url: str,
+        title: str,
+        evidence: SearchPageEvidence,
     ) -> None:
         if trace is None:
             return
-        trace.final_url = page.url
+        trace.final_url = final_url
         trace.final_title = title
         trace.block_marker = evidence.marker
         trace.page_kind = evidence.kind
