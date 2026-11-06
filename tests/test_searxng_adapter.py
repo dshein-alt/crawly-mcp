@@ -42,12 +42,13 @@ async def test_good_response_returns_deduped_urls() -> None:
         )
 
     async with _make_client(handler) as client:
-        urls = await searxng_search(
+        outcome = await searxng_search(
             "https://example.searxng/",
             "python async playwright",
             client=client,
             timeout=5.0,
         )
+        urls = outcome.urls
     assert urls[0] == "https://playwright.dev/python/docs/intro"
     assert len(urls) == 5
     assert len(set(urls)) == 5
@@ -66,9 +67,10 @@ async def test_caps_results_at_max() -> None:
         )
 
     async with _make_client(handler) as client:
-        urls = await searxng_search(
+        outcome = await searxng_search(
             "https://example.searxng/", "q", client=client, timeout=5.0
         )
+        urls = outcome.urls
     assert len(urls) == 5
     assert urls == [f"https://example-{i}.test/" for i in range(5)]
 
@@ -91,9 +93,10 @@ async def test_dedupes_duplicate_urls() -> None:
         )
 
     async with _make_client(handler) as client:
-        urls = await searxng_search(
+        outcome = await searxng_search(
             "https://example.searxng/", "q", client=client, timeout=5.0
         )
+        urls = outcome.urls
     assert urls == ["https://a.test/", "https://b.test/", "https://c.test/"]
 
 
@@ -105,9 +108,10 @@ async def test_empty_results_returns_empty_list() -> None:
         )
 
     async with _make_client(handler) as client:
-        urls = await searxng_search(
+        outcome = await searxng_search(
             "https://example.searxng/", "q", client=client, timeout=5.0
         )
+        urls = outcome.urls
     assert urls == []
 
 
@@ -170,9 +174,10 @@ async def test_drops_non_http_scheme_urls() -> None:
         )
 
     async with _make_client(handler) as client:
-        urls = await searxng_search(
+        outcome = await searxng_search(
             "https://example.searxng/", "q", client=client, timeout=5.0
         )
+        urls = outcome.urls
     assert urls == ["https://ok.example/"]
 
 
@@ -190,3 +195,78 @@ async def test_malformed_json_raises_blocked() -> None:
             await searxng_search(
                 "https://example.searxng/", "q", client=client, timeout=5.0
             )
+
+
+@pytest.mark.asyncio
+async def test_upstream_error_field_is_reported_not_swallowed() -> None:
+    """HTTP 200 with an `error` field is a failed search, not an empty one."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=json.dumps({"error": "too many requests"}).encode(),
+            headers={"content-type": "application/json"},
+        )
+
+    async with _make_client(handler) as client:
+        outcome = await searxng_search(
+            "https://example.searxng/", "q", client=client, timeout=5.0
+        )
+    assert outcome.urls == []
+    assert outcome.error == "too many requests"
+    assert outcome.answered_empty is False
+
+
+@pytest.mark.asyncio
+async def test_unresponsive_engines_are_carried_out_of_the_payload() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=json.dumps(
+                {"results": [], "unresponsive_engines": ["google:bot"]}
+            ).encode(),
+            headers={"content-type": "application/json"},
+        )
+
+    async with _make_client(handler) as client:
+        outcome = await searxng_search(
+            "https://example.searxng/", "q", client=client, timeout=5.0
+        )
+    assert outcome.urls == []
+    assert outcome.unresponsive_engines == ("google:bot",)
+    assert outcome.answered_empty is False
+
+
+@pytest.mark.asyncio
+async def test_missing_results_field_is_not_read_as_an_empty_search() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=json.dumps({"suggestions": []}).encode(),
+            headers={"content-type": "application/json"},
+        )
+
+    async with _make_client(handler) as client:
+        outcome = await searxng_search(
+            "https://example.searxng/", "q", client=client, timeout=5.0
+        )
+    assert outcome.urls == []
+    assert outcome.error == "response carried no 'results' field"
+
+
+@pytest.mark.asyncio
+async def test_clean_empty_answer_is_a_trustworthy_empty() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=json.dumps(
+                {"results": [], "unresponsive_engines": [], "answers": []}
+            ).encode(),
+            headers={"content-type": "application/json"},
+        )
+
+    async with _make_client(handler) as client:
+        outcome = await searxng_search(
+            "https://example.searxng/", "q", client=client, timeout=5.0
+        )
+    assert outcome.answered_empty is True

@@ -11,6 +11,7 @@ from crawly_mcp.errors import (
     ProviderUnavailableError,
 )
 from crawly_mcp.models import ProviderAttempt
+from crawly_mcp.searxng import SearxngOutcome
 from crawly_mcp.service import ProviderHealth, WebSearchService
 
 DDG_OK = (
@@ -33,7 +34,7 @@ def _make_service(monkeypatch, *, adapter=None, browser=None) -> WebSearchServic
     svc._attempt_browser = AsyncMock(return_value=browser or DDG_OK)
     monkeypatch.setattr(
         "crawly_mcp.service.searxng_search",
-        adapter or AsyncMock(return_value=["https://r.example/"]),
+        adapter or AsyncMock(return_value=SearxngOutcome(urls=["https://r.example/"])),
     )
     return svc
 
@@ -65,7 +66,7 @@ async def test_searxng_without_env_reports_unavailable_in_available_providers(
 @pytest.mark.asyncio
 async def test_searxng_with_env_calls_adapter_once(monkeypatch) -> None:
     monkeypatch.setenv("CRAWLY_SEARXNG_URL", "https://pinned.example/")
-    adapter = AsyncMock(return_value=["https://r.example/"])
+    adapter = AsyncMock(return_value=SearxngOutcome(urls=["https://r.example/"]))
     svc = _make_service(monkeypatch, adapter=adapter)
 
     resp = await svc.search(provider="searxng", context="x")
@@ -80,7 +81,7 @@ async def test_searxng_with_env_calls_adapter_once(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_searxng_normalizes_trailing_slash(monkeypatch) -> None:
     monkeypatch.setenv("CRAWLY_SEARXNG_URL", "https://pinned.example")  # no slash
-    adapter = AsyncMock(return_value=["https://r.example/"])
+    adapter = AsyncMock(return_value=SearxngOutcome(urls=["https://r.example/"]))
     svc = _make_service(monkeypatch, adapter=adapter)
 
     await svc.search(provider="searxng", context="x")
@@ -91,7 +92,7 @@ async def test_searxng_normalizes_trailing_slash(monkeypatch) -> None:
 async def test_searxng_zero_results_stops_the_cascade(monkeypatch) -> None:
     """An honest empty answer is an answer: cascading on it wastes calls."""
     monkeypatch.setenv("CRAWLY_SEARXNG_URL", "https://pinned.example/")
-    adapter = AsyncMock(return_value=[])
+    adapter = AsyncMock(return_value=SearxngOutcome())
     svc = _make_service(monkeypatch, adapter=adapter)
 
     resp = await svc.search(provider="searxng", context="obscure")
@@ -100,6 +101,57 @@ async def test_searxng_zero_results_stops_the_cascade(monkeypatch) -> None:
     assert resp.next_action == "refine_query"
     assert resp.suggested_providers == []
     svc._attempt_browser.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_searxng_upstream_error_cascades_instead_of_reporting_empty(
+    monkeypatch,
+) -> None:
+    """HTTP 200 + an `error` field is a provider that could not answer.
+
+    Read as an empty URL list it stopped the cascade and told the caller to
+    reword the query, which is the ambiguity this whole change exists to kill.
+    """
+    monkeypatch.setenv("CRAWLY_SEARXNG_URL", "https://pinned.example/")
+    adapter = AsyncMock(return_value=SearxngOutcome(error="too many requests"))
+    svc = _make_service(monkeypatch, adapter=adapter)
+
+    resp = await svc.search(provider="searxng", context="x")
+    assert resp.status == "ok"
+    assert resp.urls == ["https://ddg.example/"]
+    assert resp.attempted[0].provider == "searxng"
+    assert resp.attempted[0].status == "unavailable"
+    assert "too many requests" in resp.attempted[0].detail
+    svc._attempt_browser.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_searxng_unresponsive_engines_cascade(monkeypatch) -> None:
+    """Empty results plus failed engines is an engine failure, not an empty web."""
+    monkeypatch.setenv("CRAWLY_SEARXNG_URL", "https://pinned.example/")
+    adapter = AsyncMock(
+        return_value=SearxngOutcome(unresponsive_engines=("google:bot",))
+    )
+    svc = _make_service(monkeypatch, adapter=adapter)
+
+    resp = await svc.search(provider="searxng", context="x")
+    assert resp.status == "ok"
+    assert resp.attempted[0].status == "unavailable"
+    assert "google:bot" in resp.attempted[0].detail
+    assert resp.provider == "duckduckgo"
+
+
+@pytest.mark.asyncio
+async def test_searxng_answer_with_no_results_field_cascades(monkeypatch) -> None:
+    monkeypatch.setenv("CRAWLY_SEARXNG_URL", "https://pinned.example/")
+    adapter = AsyncMock(
+        return_value=SearxngOutcome(error="response carried no 'results' field")
+    )
+    svc = _make_service(monkeypatch, adapter=adapter)
+
+    resp = await svc.search(provider="searxng", context="x")
+    assert resp.attempted[0].status == "unavailable"
+    svc._attempt_browser.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -145,7 +197,7 @@ async def test_searxng_rejects_non_http_scheme(monkeypatch) -> None:
 async def test_searxng_accepts_plain_http(monkeypatch) -> None:
     """http:// is allowed so users can point at a localhost / private SearXNG."""
     monkeypatch.setenv("CRAWLY_SEARXNG_URL", "http://searxng.local:8080/")
-    adapter = AsyncMock(return_value=["https://r.example/"])
+    adapter = AsyncMock(return_value=SearxngOutcome(urls=["https://r.example/"]))
     svc = _make_service(monkeypatch, adapter=adapter)
 
     resp = await svc.search(provider="searxng", context="x")
@@ -200,7 +252,7 @@ async def test_http_client_is_lazily_recreated_after_aclose(monkeypatch) -> None
 
     async def fake_adapter(instance_url, query, *, client, timeout):
         captured.append(client)
-        return ["https://r.example/"]
+        return SearxngOutcome(urls=["https://r.example/"])
 
     svc = _make_service(monkeypatch)
     # _make_service installs its own stub; swap to our capturing adapter.
@@ -310,7 +362,9 @@ def test_max_providers_caps_the_cascade(monkeypatch) -> None:
 async def test_max_providers_one_disables_cascading(monkeypatch) -> None:
     monkeypatch.delenv("CRAWLY_SEARXNG_URL", raising=False)
     monkeypatch.setenv("CRAWLY_SEARCH_MAX_PROVIDERS", "1")
-    monkeypatch.setattr("crawly_mcp.service.searxng_search", AsyncMock(return_value=[]))
+    monkeypatch.setattr(
+        "crawly_mcp.service.searxng_search", AsyncMock(return_value=SearxngOutcome())
+    )
     svc = _make_service(
         monkeypatch,
         browser=(

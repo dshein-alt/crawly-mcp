@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
 import httpx
@@ -11,14 +12,35 @@ from crawly_mcp.errors import ProviderBlockedError
 _BLOCKING_STATUS = frozenset({401, 403, 429})
 
 
+@dataclass(slots=True)
+class SearxngOutcome:
+    """What an instance's JSON answer actually said, not just its URL list.
+
+    An empty `results` list has two opposite readings and the URL list alone
+    cannot tell them apart: the instance searched and found nothing, or the
+    instance could not search and said so in a field the URL list throws away.
+    Collapsing the second into the first stops a cascade on a provider that
+    never answered.
+    """
+
+    urls: list[str] = field(default_factory=list)
+    error: str | None = None
+    unresponsive_engines: tuple[str, ...] = ()
+
+    @property
+    def answered_empty(self) -> bool:
+        """A clean "we searched and found nothing" — the trustworthy empty."""
+        return not self.urls and self.error is None and not self.unresponsive_engines
+
+
 async def searxng_search(
     instance_url: str,
     query: str,
     *,
     client: httpx.AsyncClient,
     timeout: float,
-) -> list[str]:
-    """Query one SearXNG instance via its JSON API and return up to 5 result URLs.
+) -> SearxngOutcome:
+    """Query one SearXNG instance via its JSON API.
 
     Raises ProviderBlockedError for refused/non-JSON responses and 401/403/429.
     Propagates httpx.TimeoutException, httpx.RequestError, and httpx.HTTPStatusError
@@ -63,7 +85,46 @@ async def searxng_search(
             f"searxng instance {instance_url!r} returned malformed JSON"
         ) from exc
 
+    outcome = _outcome_from_payload(payload, instance_url)
+    logger.debug(
+        "searxng_search instance={} returned={} error={!r} unresponsive_engines={!r}",
+        instance_url,
+        len(outcome.urls),
+        outcome.error,
+        outcome.unresponsive_engines,
+    )
+    return outcome
+
+
+def _outcome_from_payload(payload: object, instance_url: str) -> SearxngOutcome:
+    """Read an instance's JSON body into urls plus the reasons it has none.
+
+    The URL list is the part a caller wants; the error and unresponsive-engine
+    fields are the part that says whether an empty list means "found nothing"
+    or "could not look". Keeping the reading in one place is what stops the
+    second from being reported as the first.
+    """
+    if not isinstance(payload, dict):
+        raise ProviderBlockedError(
+            f"searxng instance {instance_url!r} returned {type(payload).__name__} "
+            "where a JSON object was expected"
+        )
+
+    error = payload.get("error")
+    error_text = str(error).strip() if error else None
+
+    unresponsive = payload.get("unresponsive_engines") or []
+    unresponsive_names = tuple(
+        str(entry).strip()
+        for entry in (unresponsive if isinstance(unresponsive, list) else [])
+        if str(entry).strip()
+    )
+
     raw_results = payload.get("results") or []
+    if "results" not in payload and error_text is None:
+        # An answer with no results field at all is a shape we do not know how
+        # to read, which is not the same as a search that found nothing.
+        error_text = "response carried no 'results' field"
     urls: list[str] = []
     seen: set[str] = set()
     for entry in raw_results:
@@ -83,9 +144,12 @@ async def searxng_search(
             break
 
     logger.debug(
-        "searxng_search instance={} raw={} returned={}",
+        "searxng payload instance={} raw={} returned={} error={!r}",
         instance_url,
         len(raw_results),
         len(urls),
+        error_text,
     )
-    return urls
+    return SearxngOutcome(
+        urls=urls, error=error_text, unresponsive_engines=unresponsive_names
+    )

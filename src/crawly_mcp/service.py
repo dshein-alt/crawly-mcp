@@ -528,7 +528,7 @@ class WebSearchService:
 
         logger.info("searxng entry instance={}", instance_url)
         try:
-            urls = await searxng_search(
+            outcome = await searxng_search(
                 instance_url,
                 context,
                 client=self._get_http(),
@@ -550,22 +550,35 @@ class WebSearchService:
                 f"searxng instance {instance_url!r} request failed: {exc}"
             ) from exc
 
-        logger.info("searxng instance={} results={}", instance_url, len(urls))
-        if not urls:
-            # A JSON API that answers with an empty list is a trustworthy
-            # "nothing found", not a provider failure.
+        logger.info("searxng instance={} results={}", instance_url, len(outcome.urls))
+        if outcome.error:
+            # The instance answered in its own error field: it did not search.
+            # That is a provider failure, so the cascade moves on.
+            raise ProviderUnavailableError(
+                f"searxng instance {instance_url!r} reported an error: {outcome.error}"
+            )
+        if not outcome.urls:
+            if outcome.unresponsive_engines:
+                raise ProviderUnavailableError(
+                    f"searxng instance {instance_url!r} returned no results and "
+                    f"reported unresponsive engines "
+                    f"{list(outcome.unresponsive_engines)}; the empty answer is an "
+                    "engine failure, not a search that found nothing"
+                )
+            # A JSON API that answers with an empty list, no error, and no
+            # failed engines is a trustworthy "nothing found".
             return [], ProviderAttempt(
                 provider=provider,
                 status="no_results",
                 final_url=instance_url,
                 detail="searxng instance answered with no results",
             )
-        return urls, ProviderAttempt(
+        return outcome.urls, ProviderAttempt(
             provider=provider,
             status="ok",
-            results=len(urls),
+            results=len(outcome.urls),
             final_url=instance_url,
-            detail=f"{len(urls)} result URL(s)",
+            detail=f"{len(outcome.urls)} result URL(s)",
         )
 
     async def _attempt_browser(
