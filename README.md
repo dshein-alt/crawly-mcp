@@ -348,7 +348,7 @@ Each traced `search()` call writes one directory containing:
 - `PLAYWRIGHT_BROWSER_SOURCE=system` uses a host Chromium binary (driven by patchright).
 - `PLAYWRIGHT_BROWSER_SOURCE=bundled` uses patchright-managed Chromium (`patchright install chromium`).
 - Global navigation concurrency cap of `3`.
-- Timeouts: `15s` per page, `20s` total for `search`, `35s` total for `fetch`.
+- Timeouts: `15s` per provider attempt, `45s` across a `search` cascade; `15s` per URL and `35s` total for `fetch`.
 - SSRF guard: `http/https` only, no embedded credentials, blocks loopback/private/link-local/reserved IPs before navigation and on browser subrequests.
 - JavaScript challenge pages get a bounded `10s` settle window. `patchright` provides fingerprint patches against common bot-detection checks; provider-specific warm-up hops and synthetic client-hint headers keep the browser identity stable across requests. No CAPTCHA solving or site-specific bypass logic.
 - `fetch()` returns raw HTML by default, or extracted readable text when the request sets `content_format="text"`.
