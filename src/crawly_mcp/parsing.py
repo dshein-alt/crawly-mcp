@@ -4,20 +4,27 @@ import json as _json
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
+from typing import TypeAlias
 from urllib.parse import parse_qs, quote_plus, unquote, urljoin, urlsplit
 
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 from loguru import logger
+from soupsieve import SelectorSyntaxError, match as _match_element
 
-from crawly_mcp.constants import DEFAULT_PROVIDER, MAX_SEARCH_RESULTS
+from crawly_mcp.constants import MAX_SEARCH_RESULTS, PageKind
 
-# The four mappings below (PROVIDER_HOST_SUFFIXES, SEARCH_URL_TEMPLATES,
-# RESULT_SELECTORS, SEARCH_BLOCK_MARKERS) are keyed by browser-driven providers
-# only ("duckduckgo", "google", "yandex"). The searxng provider uses the JSON
-# API in crawly_mcp.searxng and never traverses this module.
+# (page kind, marker that proved it, one-line explanation)
+Verdict: TypeAlias = tuple[PageKind, str | None, str]
+
+# The mappings below (PROVIDER_HOST_SUFFIXES, SEARCH_URL_TEMPLATES,
+# RESULT_SELECTORS, RESULT_CONTAINERS, SEARCH_CONSENT_MARKERS,
+# SEARCH_CAPTCHA_MARKERS, SEARCH_ZERO_RESULT_MARKERS) are keyed by
+# browser-driven providers only ("duckduckgo", "google", "yandex"). The searxng
+# provider uses the JSON API in crawly_mcp.searxng and never traverses this
+# module.
 PROVIDER_HOST_SUFFIXES = {
     "duckduckgo": ("duckduckgo.com", "duck.com"),
-    "google": ("google.com",),
+    "google": ("google.com", "google.ru"),
     "yandex": ("yandex.com", "yandex.ru", "yandex.kz", "yandex.by"),
 }
 
@@ -27,12 +34,18 @@ SEARCH_URL_TEMPLATES = {
     "yandex": "https://yandex.ru/search/?text={query}",
 }
 
+# Anchors that name a result. They are only trusted when they sit inside one of
+# RESULT_CONTAINERS below; on their own they also match navigation, footer, and
+# "related searches" chrome, which is how a zero-hit page used to be reported as
+# five plausible results.
 RESULT_SELECTORS = {
     "duckduckgo": [
         "a.result__a[href]",
         "article a[data-testid='result-title-a'][href]",
     ],
     "google": [
+        "div.yuRUbf a[href]",
+        "a.zReHs[href]",
         "div.yuRUbf > a[href]",
         "a[jsname][href]",
     ],
@@ -42,25 +55,102 @@ RESULT_SELECTORS = {
     ],
 }
 
-SEARCH_BLOCK_MARKERS = {
+# Markup that wraps a single organic result. An anchor outside every one of
+# these is page chrome, not a result, and is never returned as a result URL.
+RESULT_CONTAINERS = {
+    "duckduckgo": [
+        "article",
+        "div.result__body",
+        "section[data-testid='web-result']",
+    ],
+    "google": ["div.yuRUbf", "div.g", "div.Mffcpf", "div.vGQaTc"],
+    "yandex": ["li.serp-item", "div.organics-item2", "div.serp-item"],
+}
+
+# Result links whose target is not present in the markup. Google now routes
+# organic titles through `/goto?url=<opaque>`, which only resolves on click, so
+# the target URL cannot be read from the page. These are counted and reported
+# as an unparseable results page instead of being guessed at.
+OPAQUE_RESULT_PATHS = ("/goto?url=",)
+
+SEARCH_CONSENT_MARKERS = {
+    "duckduckgo": ("consent", "accept all", "agree and continue"),
+    "google": (
+        "before you continue",
+        "consent",
+        "agree and continue",
+        "not redirected within a few seconds",
+    ),
+    "yandex": ("соглашение", "принять все", "consent"),
+}
+
+SEARCH_CAPTCHA_MARKERS = {
     "duckduckgo": (
         "anomaly",
         "automated requests",
-        "verify",
         "static-pages",  # bot-detection redirect target, e.g. /static-pages/418.html
+        "verify you are a human",
     ),
-    "google": (
-        "before you continue",
-        "detected unusual traffic",
-        "sorry",
-        "unusual traffic",
+    "google": ("detected unusual traffic", "unusual traffic", "sorry", "recaptcha"),
+    "yandex": (
+        "robot",
+        "captcha",
+        "проверка",
+        "unusual",
+        "подтвердите, что вы не робот",
     ),
-    "yandex": ("robot", "captcha", "проверка", "unusual"),
 }
 
+# Kept as one flat map for the block-marker API used by service.py; the split
+# above is what lets a page be reported as a consent wall rather than a CAPTCHA.
+SEARCH_BLOCK_MARKERS = {
+    provider: tuple(
+        dict.fromkeys(
+            SEARCH_CONSENT_MARKERS[provider] + SEARCH_CAPTCHA_MARKERS[provider]
+        )
+    )
+    for provider in SEARCH_CONSENT_MARKERS
+}
 
-def build_search_url(provider: str | None, context: str) -> str:
-    resolved_provider = provider or DEFAULT_PROVIDER
+# Copy a provider puts on a results page that genuinely has nothing to show.
+# Only these make `no_results` a defensible claim.
+SEARCH_ZERO_RESULT_MARKERS = {
+    "duckduckgo": (
+        "no results",
+        "not many results",
+        "nothing to show",
+        "did not return any results",
+    ),
+    "google": (
+        "did not match any documents",
+        "no results found",
+        "итогов не найдено",
+    ),
+    "yandex": (
+        "ничего не найдено",
+        "нет результатов",
+        "по вашему запросу ничего не найдено",
+        "no results found",
+    ),
+}
+
+# A page that rendered this little text and no result containers never reached
+# a results view at all: DuckDuckGo serves a "redirecting to the non-JavaScript
+# site" interstitial, and Google serves a redirect interstitial, both with the
+# real results absent. That is a provider failure, not an empty web.
+SHELL_TEXT_CHARS = 2500
+SEARCH_SHELL_MARKERS = (
+    "you are being redirected to the non-javascript site",
+    "redirected to the non-javascript",
+    "please click here if you are not redirected",
+    "checking your browser",
+    "just a moment",
+    "enable javascript and cookies to continue",
+)
+
+
+def build_search_url(provider: str, context: str) -> str:
+    resolved_provider = provider
     if resolved_provider not in SEARCH_URL_TEMPLATES:
         raise KeyError(
             f"build_search_url supports only browser-driven providers "
@@ -70,16 +160,194 @@ def build_search_url(provider: str | None, context: str) -> str:
     return template.format(query=quote_plus(context))
 
 
+@dataclass(slots=True)
+class SearchPageEvidence:
+    """What a search navigation actually landed on, with counts as proof."""
+
+    kind: PageKind = "unknown"
+    result_anchors: int = 0
+    opaque_anchors: int = 0
+    text_chars: int = 0
+    marker: str | None = None
+    detail: str = ""
+
+    @property
+    def extractable(self) -> bool:
+        return self.kind == "results" and self.result_anchors > 0
+
+
+def classify_search_page(
+    provider: str, url: str, title: str, html: str
+) -> SearchPageEvidence:
+    """Name the kind of page a search landed on, and show the counts behind it.
+
+    The checks run in order of severity: a wall is reported before a results
+    page, and a page that never rendered is reported before a page that is
+    empty, so `zero_results` is only ever returned for a page that positively
+    states it found nothing.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    text = soup.get_text(" ", strip=True)
+    haystack = " ".join((url.lower(), title.lower(), text[:4000])).lower()
+    anchors, opaque = _count_result_anchors(soup, provider, base_url=url)
+    evidence = SearchPageEvidence(
+        result_anchors=anchors,
+        opaque_anchors=opaque,
+        text_chars=len(text),
+    )
+    for check in (_wall_check, _shell_check, _zero_result_check, _content_check):
+        verdict = check(provider, haystack, evidence)
+        if verdict is not None:
+            evidence.kind, evidence.marker, evidence.detail = verdict
+            return evidence
+    evidence.kind, evidence.marker, evidence.detail = _fallback_check(evidence)
+    return evidence
+
+
+def _wall_check(
+    provider: str, haystack: str, evidence: SearchPageEvidence
+) -> Verdict | None:
+    del evidence
+    marker = _first_marker(haystack, SEARCH_CAPTCHA_MARKERS.get(provider, ()))
+    if marker is not None:
+        return "captcha", marker, _wall_detail(marker)
+    marker = _first_marker(haystack, SEARCH_CONSENT_MARKERS.get(provider, ()))
+    if marker is not None:
+        return "consent", marker, _wall_detail(marker)
+    return None
+
+
+def _shell_check(
+    provider: str, haystack: str, evidence: SearchPageEvidence
+) -> Verdict | None:
+    del provider
+    marker = _first_marker(haystack, SEARCH_SHELL_MARKERS)
+    if marker is None or evidence.result_anchors:
+        return None
+    return (
+        "shell",
+        marker,
+        f"provider served an interstitial (marker={marker!r}) with no results "
+        "rendered; the page never reached a results view",
+    )
+
+
+def _zero_result_check(
+    provider: str, haystack: str, evidence: SearchPageEvidence
+) -> Verdict | None:
+    """A page that states it found nothing is empty, whatever its DOM contains.
+
+    DuckDuckGo's zero-hit page ships article-wrapped links to popular sites, so
+    trusting the anchors over the provider's own statement is exactly how a
+    niche query used to come back as five plausible, unrelated URLs.
+    """
+    del evidence
+    marker = _first_marker(haystack, SEARCH_ZERO_RESULT_MARKERS.get(provider, ()))
+    if marker is None:
+        return None
+    return (
+        "zero_results",
+        marker,
+        f"results page states it found nothing (marker={marker!r})",
+    )
+
+
+def _content_check(
+    provider: str, haystack: str, evidence: SearchPageEvidence
+) -> Verdict | None:
+    del provider, haystack
+    if evidence.result_anchors > 0:
+        return "results", None, ""
+    if evidence.opaque_anchors > 0:
+        return (
+            "results",
+            None,
+            f"{evidence.opaque_anchors} result link(s) present but their targets "
+            "are not in the markup (click-through redirect); URLs are not "
+            "statically extractable",
+        )
+    return None
+
+
+def _fallback_check(evidence: SearchPageEvidence) -> Verdict:
+    if evidence.text_chars < SHELL_TEXT_CHARS:
+        return (
+            "shell",
+            None,
+            f"page rendered only {evidence.text_chars} characters of text with no "
+            "result containers; it did not reach a results view",
+        )
+    return (
+        "unknown",
+        None,
+        f"page rendered {evidence.text_chars} characters of text but no result "
+        "containers matched; the provider layout may have changed",
+    )
+
+
+def _wall_detail(marker: str) -> str:
+    return (
+        f"provider returned a wall page (marker={marker!r}); it refused the "
+        "request rather than answering it"
+    )
+
+
+def _count_result_anchors(
+    soup: BeautifulSoup, provider: str, *, base_url: str
+) -> tuple[int, int]:
+    extractable = 0
+    opaque = 0
+    for anchor in _result_anchors(soup, provider):
+        href = anchor.get("href") or ""
+        absolute = urljoin(base_url, href)
+        if any(path in absolute for path in OPAQUE_RESULT_PATHS):
+            opaque += 1
+            continue
+        if normalize_result_url(provider, href, base_url=base_url) is not None:
+            extractable += 1
+    return extractable, opaque
+
+
+def _result_anchors(soup: BeautifulSoup, provider: str) -> list:
+    """Result anchors that live inside a result container.
+
+    Chrome links (nav, footer, related searches, ads) match the same selectors
+    as real results. Requiring a container is what stops a page with nothing on
+    it from being reported as a page full of results.
+    """
+    combined = ", ".join(RESULT_SELECTORS[provider])
+    containers = RESULT_CONTAINERS[provider]
+    hits: list = []
+    for anchor in soup.select(combined):
+        if not _in_result_container(anchor, containers):
+            continue
+        hits.append(anchor)
+    return hits
+
+
+def _in_result_container(anchor, containers: list[str]) -> bool:
+    for parent in anchor.parents:
+        if not isinstance(parent, Tag):
+            continue
+        for selector in containers:
+            try:
+                if _match_element(selector, parent):
+                    return True
+            except SelectorSyntaxError:
+                logger.debug("ignoring unusable container selector {!r}", selector)
+    return False
+
+
 def extract_search_results(provider: str, html: str, base_url: str) -> list[str]:
     soup = BeautifulSoup(html, "html.parser")
     seen: set[str] = set()
     urls: list[str] = []
 
-    combined_selector = ", ".join(RESULT_SELECTORS[provider])
-    raw_anchors = soup.select(combined_selector)
-    for anchor in raw_anchors:
+    for anchor in _result_anchors(soup, provider):
         href = anchor.get("href")
         if not href:
+            continue
+        if any(path in urljoin(base_url, href) for path in OPAQUE_RESULT_PATHS):
             continue
         normalized = normalize_result_url(provider, href, base_url=base_url)
         if normalized is None or normalized in seen:
@@ -92,15 +360,14 @@ def extract_search_results(provider: str, html: str, base_url: str) -> list[str]
     logger.debug(
         "parsing {} raw_anchors={} html_bytes={} returned={}",
         provider,
-        len(raw_anchors),
+        len(_result_anchors(soup, provider)),
         len(html),
         len(urls),
     )
     if not urls:
         logger.warning(
-            "parsing {} returned zero results raw_anchors={} html_bytes={}",
+            "parsing {} returned zero extractable results html_bytes={}",
             provider,
-            len(raw_anchors),
             len(html),
         )
     return urls
@@ -131,7 +398,7 @@ def is_search_blocked(provider: str, url: str, title: str, html: str) -> bool:
 
 
 def search_block_marker(provider: str, url: str, title: str, html: str) -> str | None:
-    """Return the marker that flagged this page as a provider block, or None.
+    """Return the marker that flagged this page as a provider wall, or None.
 
     Checking the URL, title, and first 4 KiB of rendered text is enough to
     catch DuckDuckGo `/static-pages/418.html` redirects, Google `/sorry`
@@ -140,7 +407,11 @@ def search_block_marker(provider: str, url: str, title: str, html: str) -> str |
     """
     text = BeautifulSoup(html, "html.parser").get_text(" ", strip=True)[:4000].lower()
     haystack = " ".join((url.lower(), title.lower(), text))
-    for marker in SEARCH_BLOCK_MARKERS[provider]:
+    return _first_marker(haystack, SEARCH_BLOCK_MARKERS[provider])
+
+
+def _first_marker(haystack: str, markers: Iterable[str]) -> str | None:
+    for marker in markers:
         if marker in haystack:
             return marker
     return None
@@ -165,6 +436,9 @@ def _first(values: Iterable[str] | None) -> str | None:
     return None
 
 
+MIN_TOKEN_CHARS = 2
+
+
 def build_snippets(
     text: str,
     query: str,
@@ -172,19 +446,60 @@ def build_snippets(
     max_matches: int,
     context_chars: int,
 ) -> list[str]:
+    """Return up to `max_matches` passages of `text` relevant to `query`.
+
+    An exact phrase match wins outright. Otherwise the query is treated as a
+    bag of tokens and windows are ranked by how many distinct tokens they
+    cover, so a natural-language query like "how to install chromium browser"
+    still finds the passage that talks about installing chromium. Matching the
+    whole query as one literal string silently returns nothing for every
+    multi-word query, because the words are separated by markup in the page.
+    """
     query_stripped = query.strip()
     if not query_stripped:
         return []
 
-    pattern = _word_boundary_pattern(query_stripped)
     half = max(context_chars // 2, 20)
+    phrase = _windowed_snippets(text, _word_boundary_pattern(query_stripped), half)
+    snippets = _dedupe(phrase, max_matches)
+    if snippets:
+        return snippets
 
-    snippets: list[str] = []
-    seen: set[str] = set()
+    tokens = [
+        token
+        for token in re.split(r"\W+", query_stripped)
+        if len(token) >= MIN_TOKEN_CHARS
+    ]
+    if not tokens:
+        return []
 
+    scored: list[tuple[int, int, str]] = []
+    seen_spans: set[tuple[int, int]] = set()
+    for token in tokens:
+        for start, end, raw in _windowed_snippets(
+            text, _word_boundary_pattern(token), half, with_span=True
+        ):
+            if (start, end) in seen_spans:
+                continue
+            seen_spans.add((start, end))
+            coverage = sum(
+                1 for other in tokens if _word_boundary_pattern(other).search(raw)
+            )
+            scored.append((-coverage, start, raw))
+
+    scored.sort()
+    return _dedupe([raw for _, _, raw in scored], max_matches)
+
+
+def _windowed_snippets(
+    text: str,
+    pattern: re.Pattern[str],
+    half: int,
+    *,
+    with_span: bool = False,
+) -> list:
+    out: list = []
     for match in pattern.finditer(text):
-        if len(snippets) >= max_matches:
-            break
         start = max(0, match.start() - half)
         end = min(len(text), match.end() + half)
 
@@ -201,13 +516,24 @@ def build_snippets(
         ):
             end += 1
 
-        raw = text[start:end].strip()
-        normalized = re.sub(r"\s+", " ", raw)
-        if normalized and normalized not in seen:
-            seen.add(normalized)
-            snippets.append(normalized)
+        raw = re.sub(r"\s+", " ", text[start:end].strip())
+        if not raw:
+            continue
+        out.append((start, end, raw) if with_span else raw)
+    return out
 
-    return snippets
+
+def _dedupe(values: Iterable[str], limit: int) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        out.append(value)
+        if len(out) >= limit:
+            break
+    return out
 
 
 def _word_boundary_pattern(query: str) -> re.Pattern[str]:

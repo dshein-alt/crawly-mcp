@@ -275,7 +275,11 @@ class _FakePage:
         return "results"
 
     async def content(self) -> str:
-        return '<html><a class="result__a" href="https://example.com/1">r1</a></html>'
+        return (
+            "<html><article>"
+            '<a class="result__a" href="https://example.com/1">r1</a>'
+            "</article></html>"
+        )
 
     async def close(self) -> None:
         self.closed = True

@@ -4,6 +4,7 @@ from crawly_mcp.parsing import (
     SearchFormHit,
     build_search_url,
     build_snippets,
+    classify_search_page,
     detect_algolia_config,
     detect_opensearch_href,
     detect_search_form,
@@ -287,3 +288,124 @@ def test_detect_search_form_relative_action_resolved() -> None:
 
 def test_search_form_hit_type_available() -> None:
     assert SearchFormHit is not None
+
+
+def test_zero_results_page_yields_no_urls() -> None:
+    """A page that says it found nothing must never yield result URLs.
+
+    The old parser harvested DuckDuckGo's zero-hit page chrome and returned
+    five popular domains as if they were ranked hits, so a niche query came
+    back looking like a healthy search.
+    """
+    evidence = classify_search_page(
+        "duckduckgo",
+        "https://duckduckgo.com/?q=zzqxvplm+qkfwjzb+tmvqxoze&ia=web",
+        "zzqxvplm qkfwjzb tmvqxoze at DuckDuckGo",
+        _fixture("duckduckgo_zero_results.html"),
+    )
+    assert evidence.kind == "zero_results"
+    assert "no results" in evidence.detail
+
+
+def test_shell_page_is_not_reported_as_empty_results() -> None:
+    """DuckDuckGo's no-JavaScript interstitial is a provider failure.
+
+    It renders ~1 KB of text and no results, which the old parser reported as
+    `urls: []` — indistinguishable from "the web has nothing on this topic".
+    """
+    evidence = classify_search_page(
+        "duckduckgo",
+        "https://duckduckgo.com/?q=patchright&ia=web",
+        "patchright at DuckDuckGo",
+        _fixture("duckduckgo_shell.html"),
+    )
+    assert evidence.kind == "shell"
+    assert "interstitial" in evidence.detail
+
+
+def test_captcha_page_is_classified_as_a_wall() -> None:
+    evidence = classify_search_page(
+        "google",
+        "https://www.google.com/sorry/index",
+        "Unusual traffic from your computer network",
+        _fixture("google_sorry.html"),
+    )
+    assert evidence.kind == "captcha"
+    assert evidence.marker == "detected unusual traffic"
+
+
+def test_goto_only_results_page_reports_unextractable_urls() -> None:
+    """Google routes organic titles through /goto?url=, whose target is opaque.
+
+    Counting those links and saying so is honest; guessing at their targets is
+    not, and neither is reporting the page as empty.
+    """
+    html = _fixture("google_goto_only.html")
+    evidence = classify_search_page(
+        "google",
+        "https://www.google.com/search?q=python&hl=en",
+        "python - Google Search",
+        html,
+    )
+    assert evidence.kind == "results"
+    assert evidence.result_anchors == 0
+    assert evidence.opaque_anchors == 2
+    assert (
+        extract_search_results(
+            "google", html, "https://www.google.com/search?q=python&hl=en"
+        )
+        == []
+    )
+
+
+def test_results_page_is_classified_with_anchor_counts() -> None:
+    evidence = classify_search_page(
+        "duckduckgo",
+        "https://duckduckgo.com/?q=python&ia=web",
+        "python at DuckDuckGo",
+        _fixture("duckduckgo_results.html"),
+    )
+    assert evidence.kind == "results"
+    assert evidence.result_anchors == 3
+
+
+def test_links_outside_result_containers_are_not_results() -> None:
+    urls = extract_search_results(
+        "duckduckgo",
+        """
+        <html><body>
+          <nav><a class="result__a" href="https://duckduckgo.com/ads">Ads</a></nav>
+          <footer><a class="result__a" href="https://example.com/footer">f</a></footer>
+          <article><a class="result__a" href="https://example.com/real">r</a></article>
+        </body></html>
+        """,
+        "https://duckduckgo.com/?q=python&ia=web",
+    )
+    assert urls == ["https://example.com/real"]
+
+
+def test_build_snippets_matches_multi_word_queries() -> None:
+    """A natural-language query must not be matched as one literal phrase.
+
+    The page text separates the query words with markup, so the old
+    phrase-anchored match returned nothing for every multi-word query.
+    """
+    text = (
+        "Installing the browser\n"
+        "Run the install command to add the chromium browser to your system. "
+        "Chromium downloads are large."
+    )
+    snippets = build_snippets(
+        text,
+        "how to install chromium browser",
+        max_matches=3,
+        context_chars=120,
+    )
+    assert snippets
+    assert "chromium" in snippets[0].lower()
+
+
+def test_build_snippets_prefers_an_exact_phrase_match() -> None:
+    text = "The network idle option waits. Nothing else here about idle."
+    snippets = build_snippets(text, "network idle", max_matches=2, context_chars=80)
+    assert snippets[0].startswith("The network idle option")
