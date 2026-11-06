@@ -35,6 +35,25 @@ NEXT_ACTION_BY_TYPE: dict[str, NextAction] = {
     "navigation_failed": "retry_later",
 }
 
+# "Try another provider" is search advice. Fetch has no provider parameter and
+# no provider suggestions to offer, so a wall there leaves the caller exactly
+# one move: come back later. Telling a fetch caller to do something it cannot
+# do is worse than telling it nothing.
+FETCH_NEXT_ACTION_OVERRIDES: dict[str, NextAction] = {
+    "provider_unavailable": "retry_later",
+    "provider_blocked": "retry_later",
+    "challenge_blocked": "retry_later",
+}
+
+
+def next_action_for(error_type: str, *, tool: str = "search") -> NextAction:
+    """The move this failure implies, for the tool that hit it."""
+    if tool == "fetch":
+        override = FETCH_NEXT_ACTION_OVERRIDES.get(error_type)
+        if override is not None:
+            return override
+    return NEXT_ACTION_BY_TYPE.get(error_type, "report_to_user")
+
 
 class WebSearchError(Exception):
     def __init__(
@@ -45,6 +64,7 @@ class WebSearchError(Exception):
         code: int = INTERNAL_ERROR,
         data: dict[str, Any] | None = None,
         page_kind: str | None = None,
+        landed_url: str | None = None,
     ) -> None:
         super().__init__(message)
         self.error_type = error_type
@@ -54,6 +74,11 @@ class WebSearchError(Exception):
         # What kind of page the provider served, when the failure came from
         # inspecting one. It survives into the cascade's per-provider report.
         self.page_kind = page_kind
+        # The URL the browser ended up on. A wall is only evidence about the
+        # address it was seen at, and the per-provider report is the caller's
+        # only record of the attempt — the browser is gone by the time it reads
+        # it. Losing this is losing the proof.
+        self.landed_url = landed_url
 
     @property
     def status(self) -> ToolStatus:
@@ -99,18 +124,37 @@ class ProviderUnavailableError(WebSearchError):
     result links no longer carry extractable URLs.
     """
 
-    def __init__(self, message: str, *, page_kind: str | None = None) -> None:
-        super().__init__("provider_unavailable", message, page_kind=page_kind)
+    def __init__(
+        self,
+        message: str,
+        *,
+        page_kind: str | None = None,
+        landed_url: str | None = None,
+    ) -> None:
+        super().__init__(
+            "provider_unavailable",
+            message,
+            page_kind=page_kind,
+            landed_url=landed_url,
+        )
 
 
 class TimeoutExceededError(WebSearchError):
-    def __init__(self, message: str) -> None:
-        super().__init__("timeout", message)
+    def __init__(self, message: str, *, landed_url: str | None = None) -> None:
+        super().__init__("timeout", message, landed_url=landed_url)
 
 
 class ProviderBlockedError(WebSearchError):
-    def __init__(self, message: str, *, page_kind: str | None = None) -> None:
-        super().__init__("provider_blocked", message, page_kind=page_kind)
+    def __init__(
+        self,
+        message: str,
+        *,
+        page_kind: str | None = None,
+        landed_url: str | None = None,
+    ) -> None:
+        super().__init__(
+            "provider_blocked", message, page_kind=page_kind, landed_url=landed_url
+        )
 
 
 class ChallengeBlockedError(WebSearchError):
@@ -119,8 +163,8 @@ class ChallengeBlockedError(WebSearchError):
 
 
 class NavigationFailedError(WebSearchError):
-    def __init__(self, message: str) -> None:
-        super().__init__("navigation_failed", message)
+    def __init__(self, message: str, *, landed_url: str | None = None) -> None:
+        super().__init__("navigation_failed", message, landed_url=landed_url)
 
 
 class URLSafetyError(WebSearchError):

@@ -53,7 +53,6 @@ from crawly_mcp.constants import (
     ToolStatus,
 )
 from crawly_mcp.errors import (
-    NEXT_ACTION_BY_TYPE,
     STATUS_BY_TYPE,
     InvalidInputError,
     NavigationFailedError,
@@ -62,6 +61,7 @@ from crawly_mcp.errors import (
     TimeoutExceededError,
     URLSafetyError,
     WebSearchError,
+    next_action_for,
 )
 from crawly_mcp.models import (
     FetchError,
@@ -406,6 +406,10 @@ class WebSearchService:
                         provider=candidate,
                         status=exc.status,
                         page_kind=exc.page_kind,
+                        # The landed URL is the evidence: the browser is closed
+                        # by the time the caller reads this, and "blocked" with
+                        # no address says nothing about where the wall was.
+                        final_url=exc.landed_url,
                         detail=exc.message,
                     ),
                 )
@@ -655,8 +659,7 @@ class WebSearchService:
         await self._prepare_provider_page(handle, page, provider, search_url, trace)
         await self._navigate_provider(handle, page, search_url)
 
-        title = await page.title()
-        html = await page.content()
+        title, html = await self._read_page(page, provider)
         evidence = classify_search_page(provider, page.url, title, html, query=query)
         self._record_probe_trace(trace, page, title, evidence)
         logger.info(
@@ -730,9 +733,13 @@ class WebSearchService:
         trace: SearchTrace | None,
     ) -> tuple[list[str], SearchPageEvidence, str]:
         if evidence.kind in ("captcha", "consent"):
-            raise ProviderBlockedError(evidence.detail, page_kind=evidence.kind)
+            raise ProviderBlockedError(
+                evidence.detail, page_kind=evidence.kind, landed_url=final_url
+            )
         if evidence.kind in ("shell", "unknown"):
-            raise ProviderUnavailableError(evidence.detail, page_kind=evidence.kind)
+            raise ProviderUnavailableError(
+                evidence.detail, page_kind=evidence.kind, landed_url=final_url
+            )
         if evidence.kind == "zero_results":
             return [], evidence, final_url
 
@@ -741,10 +748,39 @@ class WebSearchService:
             raise ProviderUnavailableError(
                 evidence.detail or "results page exposed no extractable result URLs",
                 page_kind=evidence.kind,
+                landed_url=final_url,
             )
         if trace is not None:
             trace.results = urls
         return urls, evidence, final_url
+
+    async def _read_page(self, page: Any, provider: str) -> tuple[str, str]:
+        """Read the landed page, turning a dead tab into a provider failure.
+
+        A tab can die just after navigation — "Target closed" is the common
+        shape — and an exception escaping here leaves `search()` with nothing to
+        catch: the remaining providers go untried and the caller gets a protocol
+        error in place of the answer the next provider would have given. The
+        cascade exists for exactly this case.
+        """
+        try:
+            title = await page.title()
+            html = await page.content()
+        except WebSearchError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "provider page unreadable provider={} type={} message={}",
+                provider,
+                type(exc).__name__,
+                exc,
+            )
+            raise NavigationFailedError(
+                f"{provider} page became unreadable after navigation: "
+                f"{type(exc).__name__}: {exc}",
+                landed_url=getattr(page, "url", None),
+            ) from exc
+        return title, html
 
     async def _maybe_warmup(self, page: Any, provider: str) -> None:
         try:
@@ -935,7 +971,17 @@ class WebSearchService:
         available = self.available_providers()
         excluded = self.excluded_providers()
         configured = self.provider_order()
-        known = list(configured) + [p for p in sorted(excluded) if p not in configured]
+        # Report every provider this build knows about. A caller reading
+        # "1 of 1 providers are usable" after setting a one-provider order has
+        # to be able to tell that DuckDuckGo is reachable but out of the order
+        # from a deployment that has no DuckDuckGo at all — leaving rows out
+        # hides the difference, and makes the "not in the priority order"
+        # reason below impossible to reach.
+        known = list(configured) + [
+            provider
+            for provider in sorted(ALLOWED_PROVIDERS)
+            if provider not in configured
+        ]
         searxng_configured = self._searxng_configured()
         statuses: list[ProviderStatus] = []
         for provider in known:
@@ -1161,7 +1207,7 @@ class WebSearchService:
                 error=FetchError(
                     type=exc.error_type,
                     message=f"{url}: {exc.message}",
-                    next_action=exc.next_action,
+                    next_action=next_action_for(exc.error_type, tool="fetch"),
                 ),
             )
 
@@ -1213,7 +1259,7 @@ class WebSearchService:
                     error=FetchError(
                         type=exc.error_type,
                         message=exc.message,
-                        next_action=exc.next_action,
+                        next_action=next_action_for(exc.error_type, tool="fetch"),
                     ),
                 )
 
@@ -1273,7 +1319,7 @@ def _fetch_verdict(
         next(iter(types), "internal_error"),
     )
     status = STATUS_BY_TYPE.get(dominant, "unavailable")
-    next_action = NEXT_ACTION_BY_TYPE.get(dominant, "report_to_user")
+    next_action = next_action_for(dominant, tool="fetch")
     return (
         status,
         next_action,

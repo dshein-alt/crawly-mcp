@@ -5,11 +5,18 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from patchright.async_api import TimeoutError as PlaywrightTimeoutError
+from patchright.async_api import (
+    Error as PlaywrightError,
+    TimeoutError as PlaywrightTimeoutError,
+)
 
 from crawly_mcp.browser import SearchContextHandle
 from crawly_mcp.constants import PROVIDER_HOMEPAGE
-from crawly_mcp.errors import ChallengeBlockedError, URLSafetyError
+from crawly_mcp.errors import (
+    ChallengeBlockedError,
+    URLSafetyError,
+    next_action_for,
+)
 from crawly_mcp.security import URLSafetyGuard  # used for URL validation only
 from crawly_mcp.service import (
     ProviderHealth,
@@ -33,6 +40,9 @@ class FakePage:
         return self.spec.get("title", "")
 
     async def content(self) -> str:
+        raised = self.spec.get("content_raises")
+        if raised is not None:
+            raise PlaywrightError(raised)
         return self.spec.get("html", "")
 
     async def close(self) -> None:
@@ -86,8 +96,10 @@ class FakeBrowserManager:
         if url not in self.specs:
             # warmup or unknown URL — silently ignore
             return
-        page.url = url
         page.spec = self.specs[url]
+        # A provider can leave the browser on a different address than the one
+        # it was asked for (Google's /sorry, DuckDuckGo's /static-pages/418).
+        page.url = page.spec.get("final_url", url)
 
 
 @pytest.mark.asyncio
@@ -624,3 +636,145 @@ async def test_fetch_reports_a_batch_where_every_url_failed(
     assert result.status == "unsafe_url"
     assert result.next_action == "report_to_user"
     assert result.failed == 1
+
+
+@pytest.mark.asyncio
+async def test_a_tab_that_dies_after_navigation_cascades(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A tab that dies mid-read is one provider failing, not the search dying.
+
+    Reading the title and content happens after navigation, and a "Target
+    closed" there used to escape `search()` entirely: the remaining providers
+    went untried and the caller got a protocol error where the next provider
+    had an answer.
+    """
+    html = (FIXTURES / "google_results.html").read_text(encoding="utf-8")
+    browser = FakeBrowserManager(
+        {
+            "https://duckduckgo.com/?q=python&ia=web": {
+                "title": "python at DuckDuckGo",
+                "content_raises": "Target page, context or browser has been closed",
+            },
+            "https://www.google.com/search?q=python&hl=en": {
+                "title": "python - Google Search",
+                "html": html,
+            },
+        }
+    )
+    service = WebSearchService(browser)
+
+    async def allow_all(self, url: str) -> None:
+        del self, url
+
+    monkeypatch.setattr(URLSafetyGuard, "validate_user_url", allow_all)
+    monkeypatch.delenv("CRAWLY_SEARXNG_URL", raising=False)
+    monkeypatch.delenv("CRAWLY_SEARCH_PROVIDER_ORDER", raising=False)
+
+    resp = await service.search(context="python")
+
+    assert resp.provider == "google"
+    assert resp.status == "ok"
+    assert resp.attempted[0].provider == "duckduckgo"
+    assert resp.attempted[0].status == "navigation_failed"
+    assert resp.urls
+
+
+@pytest.mark.asyncio
+async def test_a_wall_attempt_keeps_the_address_the_wall_was_seen_at(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ "google blocked" with no address says nothing about where the wall was.
+
+    The browser is closed by the time the caller reads the report, so the
+    landed URL has to survive the exception-to-attempt conversion.
+    """
+    html = (FIXTURES / "google_sorry.html").read_text(encoding="utf-8")
+    browser = FakeBrowserManager(
+        {
+            "https://www.google.com/search?q=x&hl=en": {
+                "title": "Unusual traffic from your computer network",
+                "html": html,
+                "final_url": "https://www.google.com/sorry/index",
+            }
+        }
+    )
+    service = WebSearchService(browser)
+
+    async def allow_all(self, url: str) -> None:
+        del self, url
+
+    monkeypatch.setattr(URLSafetyGuard, "validate_user_url", allow_all)
+    monkeypatch.setenv("CRAWLY_SEARCH_MAX_PROVIDERS", "1")
+
+    resp = await service.search(provider="google", context="x")
+
+    assert resp.attempted[0].status == "blocked"
+    assert resp.attempted[0].page_kind == "captcha"
+    assert resp.attempted[0].final_url == "https://www.google.com/sorry/index"
+
+
+def test_providers_reports_providers_left_out_of_the_priority_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A one-provider order must not make the other providers disappear.
+
+    "1 of 1 providers are usable" has to be readable as "DuckDuckGo is
+    reachable, just out of the order" and not as "this build has no
+    DuckDuckGo" — which is the difference between editing a setting and
+    redeploying.
+    """
+    monkeypatch.setenv("CRAWLY_SEARCH_PROVIDER_ORDER", "google")
+    monkeypatch.delenv("CRAWLY_SEARXNG_URL", raising=False)
+    monkeypatch.delenv("CRAWLY_SEARCH_PROVIDER_EXCLUDE", raising=False)
+    service = WebSearchService(FakeBrowserManager({}))
+
+    report = service.providers()
+
+    assert {entry.provider for entry in report.providers} == {
+        "duckduckgo",
+        "google",
+        "yandex",
+        "searxng",
+    }
+    assert report.cascade_order == ["google"]
+    duckduckgo = next(e for e in report.providers if e.provider == "duckduckgo")
+    assert duckduckgo.available is False
+    assert "priority order" in duckduckgo.detail
+    assert report.detail.startswith("1 of 4 providers are usable")
+
+
+@pytest.mark.asyncio
+async def test_fetch_wall_advises_a_move_the_caller_can_actually_make(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fetch has no provider to switch to, so "try another provider" is noise."""
+    urls = ["https://example.com/walled"]
+    browser = FakeBrowserManager(
+        {url: {"title": "t", "html": "<html></html>"} for url in urls}
+    )
+    service = WebSearchService(browser)
+
+    async def allow_all(self, url: str) -> None:
+        del self, url
+
+    async def stay_on_challenge(
+        page: FakePage, *, settle_timeout_seconds: float
+    ) -> str:
+        del settle_timeout_seconds, page
+        raise ChallengeBlockedError("page stayed on a browser challenge screen")
+
+    monkeypatch.setattr(URLSafetyGuard, "validate_user_url", allow_all)
+    monkeypatch.setattr("crawly_mcp.service.resolve_fetch_content", stay_on_challenge)
+
+    result = await service.fetch(urls=urls)
+
+    assert result.errors[urls[0]].next_action == "retry_later"
+    assert result.next_action == "retry_later"
+
+
+def test_the_same_wall_advises_differently_per_tool() -> None:
+    assert next_action_for("challenge_blocked", tool="search") == "try_other_provider"
+    assert next_action_for("challenge_blocked", tool="fetch") == "retry_later"
+    assert next_action_for("timeout", tool="fetch") == "retry_later"
+    assert next_action_for("invalid_url", tool="fetch") == "report_to_user"
