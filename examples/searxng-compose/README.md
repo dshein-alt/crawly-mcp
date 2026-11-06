@@ -6,7 +6,7 @@ Self-contained recipe to run the opt-in `searxng` provider against a local SearX
 
 - `docker-compose.yml` — two services on a shared compose network: `searxng` and `crawly-mcp`.
 - `settings.yml` — minimal SearXNG configuration with JSON output enabled (`search.formats: [html, json]`) and the rate limiter disabled (`server.limiter: false`). Both are required for crawly's JSON-API client to reach the instance.
-- `.env.example` — template for the environment file that controls the image tag and host port bindings.
+- `.env.example` — template for the environment file that controls the image tag, host port binding, logging, and provider cascade.
 - `docker-compose.test.yml` — overlay used by the behavioural test suite: builds crawly-mcp from this checkout, adds an nginx `fixture-site` serving deterministic pages, and adds `crawly-mcp-broken` pinned to an unreachable SearXNG so "nothing answered" is reproducible.
 
 ## Prerequisites
@@ -28,6 +28,13 @@ The defaults in `.env.example`:
 | `CRAWLY_MCP_IMAGE` | `ghcr.io/dshein-alt/crawly-mcp:latest` | Container image for the crawly-mcp service. Override with a local build (`localhost/crawly-mcp:local`) when developing. |
 | `CRAWLY_HOST_PORT` | `10000` | Host port that crawly's MCP HTTP transport binds to. Clients reach the server at `http://127.0.0.1:${CRAWLY_HOST_PORT}/mcp/`. |
 | `CRAWLY_LOG_LEVEL` | `INFO` | Loguru level for crawly. |
+| `CRAWLY_SEARCH_PROVIDER_ORDER` | `searxng,duckduckgo,google,yandex` | Comma-separated provider priority order. A provider omitted from this list is not used. |
+| `CRAWLY_SEARCH_PROVIDER_EXCLUDE` | empty | Comma-separated providers to forbid entirely, even when a caller requests one explicitly. Exclusion wins over the order. |
+| `CRAWLY_SEARCH_MAX_PROVIDERS` | `3` | Maximum providers attempted per search. Set to `1` to disable cascading. |
+
+The Compose file passes all three provider settings from `.env` into the crawly-mcp container, so routine provider changes require no Compose edits. For example, set `CRAWLY_SEARCH_PROVIDER_ORDER=searxng,duckduckgo` and `CRAWLY_SEARCH_PROVIDER_EXCLUDE=google,yandex` to use only SearXNG and DuckDuckGo. With the defaults, crawly tries at most three providers per call and SearXNG leads because this example configures it.
+
+After changing `.env` on a running deployment, apply it with `docker compose up -d --force-recreate crawly-mcp`. Call the MCP `providers` tool and inspect `cascade_order` to verify the resulting configuration.
 
 SearXNG itself is not exposed to the host — it's reachable only by crawly inside the compose network as `http://searxng:8080/`. If you want to inspect the SearXNG UI from your browser for debugging, temporarily add a `ports:` mapping to the `searxng` service in `docker-compose.yml`.
 

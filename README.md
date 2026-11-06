@@ -99,18 +99,20 @@ There is no instance registry: public instances on https://searx.space generally
 
 ### Run alongside a local SearXNG (compose example)
 
-A self-contained recipe is in [`examples/searxng-compose/`](examples/searxng-compose/): a `docker-compose.yml` that runs both `searxng` and `crawly-mcp` on a shared network, plus a `settings.yml` with `search.formats: [html, json]` and `server.limiter: false` (the two things crawly's `searxng` provider needs from any instance). The crawly image is pulled from GHCR by default; ports are controlled via a `.env` file.
+A self-contained recipe is in [`examples/searxng-compose/`](examples/searxng-compose/): a `docker-compose.yml` that runs both `searxng` and `crawly-mcp` on a shared network, plus a `settings.yml` with `search.formats: [html, json]` and `server.limiter: false` (the two things crawly's `searxng` provider needs from any instance). The crawly image is pulled from GHCR by default. Its `.env.example` exposes the image, host port, log level, provider order, provider exclusions, and per-search provider attempt limit.
 
 ```sh
 cd examples/searxng-compose
-cp .env.example .env        # edit if you want a non-default host port or local image
+cp .env.example .env        # edit provider, image, port, or logging settings
 docker compose up -d
 # MCP HTTP at http://127.0.0.1:10000/mcp/   (CRAWLY_HOST_PORT)
 ```
 
+The Compose file already passes `CRAWLY_SEARCH_PROVIDER_ORDER`, `CRAWLY_SEARCH_PROVIDER_EXCLUDE`, and `CRAWLY_SEARCH_MAX_PROVIDERS` from `.env` into the container. After changing them on a running deployment, run `docker compose up -d --force-recreate crawly-mcp`; no image rebuild or Compose-file edit is needed. Call the MCP `providers` tool to verify the resulting `cascade_order`.
+
 SearXNG itself is reachable only on the compose network (`http://searxng:8080/` from crawly); no host port is mapped by default.
 
-See [`examples/searxng-compose/README.md`](examples/searxng-compose/README.md) for the env-var reference and a smoke-test snippet.
+See [`examples/searxng-compose/README.md`](examples/searxng-compose/README.md) for the env-var reference, provider-configuration examples, and a smoke-test snippet.
 
 ### Why public instances generally won't work
 

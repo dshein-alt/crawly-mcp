@@ -43,6 +43,7 @@ Make every tool result say what happened and what to do next, so a caller can te
 - Continue provider cascading when browser context or tab creation fails, and close unused ephemeral contexts.
 - Pin the release fingerprint check to Ubuntu 24.04 so Patchright can install Chromium after `ubuntu-latest` moved to 26.04.
 - Upgrade CI actions to releases that run natively on Node.js 24.
+- Expose provider order, exclusion, and attempt-limit settings in the SearXNG Compose example and document their `.env` usage.
 
 ## [0.3.1] - 2026-05-12
 

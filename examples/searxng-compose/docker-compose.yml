@@ -19,5 +19,8 @@ services:
       # Crawly reaches SearXNG by its compose service name on the shared network.
       CRAWLY_SEARXNG_URL: "http://searxng:8080/"
       CRAWLY_LOG_LEVEL: "${CRAWLY_LOG_LEVEL:-INFO}"
+      CRAWLY_SEARCH_PROVIDER_ORDER: "${CRAWLY_SEARCH_PROVIDER_ORDER:-searxng,duckduckgo,google,yandex}"
+      CRAWLY_SEARCH_PROVIDER_EXCLUDE: "${CRAWLY_SEARCH_PROVIDER_EXCLUDE:-}"
+      CRAWLY_SEARCH_MAX_PROVIDERS: "${CRAWLY_SEARCH_MAX_PROVIDERS:-3}"
     ports:
       - "127.0.0.1:${CRAWLY_HOST_PORT:-10000}:8000"
