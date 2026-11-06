@@ -14,6 +14,7 @@ from crawly_mcp.parsing import (
     extract_search_results,
     is_search_blocked,
     normalize_result_url,
+    parse_defer_redirect,
     parse_defer_redirect_target,
 )
 
@@ -614,3 +615,98 @@ def test_opaque_links_can_be_collected_past_the_return_cap() -> None:
     base = "https://www.google.com/search?q=python&hl=en"
     assert len(extract_opaque_result_urls("google", html, base)) == 5
     assert len(extract_opaque_result_urls("google", html, base, limit=12)) == 8
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "https://evil.example/goto?url=FRESH",
+        "//evil.example/goto?url=FRESH",
+        "https://evil.example/pwned?next=/goto?url=FRESH",
+        "https://www.google.com/pwned?next=/goto?url=FRESH",
+        "http://www.google.com/goto?url=FRESH",
+        "https://www.google.com:8443/goto?url=FRESH",
+        "https://user@www.google.com/goto?url=FRESH",
+        "/goto?url=",
+    ],
+)
+def test_defer_rejects_other_origins_and_non_redirect_paths(target: str) -> None:
+    html = f'<meta content="3;url={target}" http-equiv="refresh">'
+    assert (
+        parse_defer_redirect_target(html, "https://www.google.com/goto?url=OLD") is None
+    )
+
+
+@pytest.mark.parametrize(
+    "html, expected_delay",
+    [
+        ('<meta content="4;url=/goto?url=FRESH" http-equiv="refresh">', 4),
+        ('<meta HTTP-EQUIV="Refresh" content="5; URL=\'/goto?url=FRESH\'">', 5),
+        ('<meta content="0.5; url=/goto?x=1&amp;url=FRESH" http-equiv="refresh">', 0.5),
+    ],
+)
+def test_defer_parses_html_attribute_order_quotes_and_delay(
+    html: str, expected_delay: float
+) -> None:
+    redirect = parse_defer_redirect(html, "https://www.google.com/goto?url=OLD")
+    assert redirect is not None
+    assert redirect.delay_seconds == expected_delay
+    assert "url=FRESH" in redirect.url
+    assert "amp;" not in redirect.url
+
+
+@pytest.mark.parametrize(
+    "provider, wrapper, anchor_class, marker",
+    [
+        ("google", "div", "zReHs", 'id="tads"'),
+        ("google", "div", "zReHs", 'data-text-ad="1"'),
+        ("google", "div", "zReHs", 'data-ad-slot="slot"'),
+        ("google", "div", "zReHs", 'aria-label="Sponsored"'),
+        ("duckduckgo", "article", "result__a", 'class="result--ad"'),
+        ("duckduckgo", "article", "result__a", 'data-testid="ad"'),
+        ("yandex", "li", "OrganicTitle-Link", 'data-fast-name="adv"'),
+    ],
+)
+def test_ad_markers_exclude_direct_and_opaque_links(
+    provider: str, wrapper: str, anchor_class: str, marker: str
+) -> None:
+    container = {
+        "google": "yuRUbf",
+        "duckduckgo": "result__body",
+        "yandex": "serp-item",
+    }[provider]
+    html = (
+        f'<{wrapper} {marker}><div class="{container}">'
+        f'<a class="{anchor_class}" href="https://advertiser.example/">Ad</a>'
+        f'<a class="{anchor_class}" href="/goto?url=AD">Ad redirect</a>'
+        f"</div></{wrapper}>"
+        f'<{wrapper} class="{container}">'
+        f'<a class="{anchor_class}" href="https://example.org/ads-guide">'
+        f"How sponsored ads work</a></{wrapper}>"
+    )
+    base = f"https://{provider}.com/search"
+    assert extract_search_results(provider, html, base) == [
+        "https://example.org/ads-guide"
+    ]
+    assert extract_opaque_result_urls(provider, html, base, limit=12) == []
+    evidence = classify_search_page(provider, base, "Search results", html)
+    assert evidence.result_anchors == 1
+    assert evidence.opaque_anchors == 0
+
+
+@pytest.mark.parametrize(
+    "href", ["https://www.googleadservices.com/pagead/aclk?x=1", "/aclk?x=1"]
+)
+def test_advertising_redirects_are_not_organic_destinations(href: str) -> None:
+    assert (
+        normalize_result_url("google", href, base_url="https://www.google.com/search")
+        is None
+    )
+
+
+def test_ad_endpoint_name_on_an_unrelated_site_is_not_ad_evidence() -> None:
+    url = "https://example.org/aclk"
+    assert (
+        normalize_result_url("google", url, base_url="https://www.google.com/search")
+        == url
+    )

@@ -40,6 +40,7 @@ from crawly_mcp.constants import (
     MAX_SEARCH_PROVIDERS,
     MAX_SEARCH_RESULTS,
     OPAQUE_RESOLVE_ATTEMPTS,
+    OPAQUE_RESOLVE_CLEANUP_SECONDS,
     OPAQUE_RESOLVE_CONCURRENCY,
     OPAQUE_RESOLVE_RETRY_DELAY_SECONDS,
     PROVIDER_FAILURE_THRESHOLD,
@@ -78,13 +79,14 @@ from crawly_mcp.models import (
     SearchResponse,
 )
 from crawly_mcp.parsing import (
+    DeferRedirect,
     SearchPageEvidence,
     build_search_url,
     classify_search_page,
     extract_opaque_result_urls,
     extract_search_results,
     normalize_result_url,
-    parse_defer_redirect_target,
+    parse_defer_redirect,
 )
 from crawly_mcp.searxng import searxng_search
 from crawly_mcp.security import URLSafetyGuard
@@ -96,6 +98,31 @@ class FetchOutcome:
     html: str | None = None
     truncated: bool = False
     error: FetchError | None = None
+
+
+@dataclass(slots=True)
+class OpaqueResolution:
+    urls: list[str]
+    collected: int
+    attempted: int
+    resolved: int
+    unfinished: int
+
+    @property
+    def detail(self) -> str:
+        detail = (
+            f"{self.resolved} of {self.collected} click-through result link(s) resolved"
+        )
+        failed = self.collected - self.resolved - self.unfinished
+        if failed:
+            detail += f"; {failed} link(s) yielded no usable destination"
+        if self.unfinished:
+            detail += (
+                f"; resolution budget expired with {self.unfinished} link(s) unfinished"
+            )
+        if self.resolved > len(self.urls):
+            detail += f"; returning {len(self.urls)} unique result URL(s)"
+        return detail
 
 
 @dataclass(slots=True)
@@ -383,7 +410,9 @@ class WebSearchService:
             try:
                 async with asyncio.timeout(budget):
                     urls, attempt = await self._attempt_provider(
-                        candidate, request.context
+                        candidate,
+                        request.context,
+                        deadline=asyncio.get_running_loop().time() + budget,
                     )
             except TimeoutError:
                 logger.warning(
@@ -440,10 +469,13 @@ class WebSearchService:
                 len(urls),
                 duration,
             )
+            detail = f"{len(urls)} result URL(s) from {winner}"
+            if attempted[-1].detail != f"{len(urls)} result URL(s)":
+                detail += f"; {attempted[-1].detail}"
             return SearchResponse(
                 status="ok",
                 next_action="none",
-                detail=f"{len(urls)} result URL(s) from {winner}",
+                detail=detail,
                 urls=urls,
                 query=request.context,
                 provider=winner,
@@ -524,11 +556,11 @@ class WebSearchService:
         )
 
     async def _attempt_provider(
-        self, provider: SearchProvider, context: str
+        self, provider: SearchProvider, context: str, *, deadline: float
     ) -> tuple[list[str], ProviderAttempt]:
         if provider == "searxng":
             return await self._attempt_searxng(provider, context)
-        return await self._attempt_browser(provider, context)
+        return await self._attempt_browser(provider, context, deadline=deadline)
 
     async def _attempt_searxng(
         self, provider: SearchProvider, context: str
@@ -593,7 +625,7 @@ class WebSearchService:
         )
 
     async def _attempt_browser(
-        self, provider: SearchProvider, context: str
+        self, provider: SearchProvider, context: str, *, deadline: float
     ) -> tuple[list[str], ProviderAttempt]:
         trace = SearchTrace.create(provider, context)
         guard_upfront = URLSafetyGuard()
@@ -611,6 +643,7 @@ class WebSearchService:
                 search_url=search_url,
                 trace=trace,
                 query=context,
+                deadline=deadline,
             )
             trace_html = None
             status: ToolStatus = "ok" if urls else "no_results"
@@ -633,7 +666,8 @@ class WebSearchService:
         finally:
             if trace is not None:
                 with suppress(Exception):
-                    await trace.finalize(page, html=trace_html)
+                    async with asyncio.timeout(TRACE_CAPTURE_TIMEOUT_SECONDS):
+                        await trace.finalize(page, html=trace_html)
             with suppress(Exception):
                 await page.close()
             # Persistent contexts stay cached for cookie continuity; ephemeral
@@ -672,6 +706,7 @@ class WebSearchService:
         provider: str,
         search_url: str,
         trace: SearchTrace | None,
+        deadline: float,
         query: str = "",
     ) -> tuple[list[str], SearchPageEvidence, str]:
         """Navigate one provider and say what the page actually was.
@@ -698,7 +733,7 @@ class WebSearchService:
             page.url,
         )
         return await self._verdict_from_evidence(
-            provider, html, page.url, evidence, trace
+            provider, html, page.url, evidence, trace, deadline=deadline
         )
 
     async def _prepare_provider_page(
@@ -757,6 +792,8 @@ class WebSearchService:
         final_url: str,
         evidence: SearchPageEvidence,
         trace: SearchTrace | None,
+        *,
+        deadline: float,
     ) -> tuple[list[str], SearchPageEvidence, str]:
         if evidence.kind in ("captcha", "consent"):
             raise ProviderBlockedError(
@@ -771,20 +808,18 @@ class WebSearchService:
 
         urls = extract_search_results(provider, html, final_url)
         if not urls and evidence.opaque_anchors:
-            urls, attempted = await self._resolve_opaque_results(
-                provider, html, final_url
+            resolution = await self._resolve_opaque_results(
+                provider,
+                html,
+                final_url,
+                deadline=deadline - (TRACE_CAPTURE_TIMEOUT_SECONDS if trace else 0),
             )
+            urls = resolution.urls
             if urls:
                 evidence.result_anchors = len(urls)
-                # Naming the loss is what tells a caller an under-filled answer
-                # was throttled rather than a page that genuinely had little on
-                # it; "2 result URL(s)" alone reads as a thin result set.
-                evidence.detail = (
-                    f"{len(urls)} of {attempted} click-through result link(s) "
-                    "resolved; the provider throttled the rest"
-                    if len(urls) < attempted
-                    else ""
-                )
+                evidence.detail = resolution.detail
+            elif resolution.unfinished:
+                raise TimeoutExceededError(resolution.detail)
         if not urls:
             detail = (
                 evidence.detail or "results page exposed no extractable result URLs"
@@ -804,32 +839,55 @@ class WebSearchService:
         return urls, evidence, final_url
 
     async def _resolve_opaque_results(
-        self, provider: str, html: str, final_url: str
-    ) -> tuple[list[str], int]:
-        """Resolve click-through result links: (destinations, links attempted).
-
-        Over-asks for links and staggers the requests. Google answers a
-        concurrent burst of `/goto` requests with a defer page, so firing every
-        link at once and keeping only what answers returns a fraction of the
-        results the page carried.
-        """
+        self, provider: str, html: str, final_url: str, *, deadline: float | None = None
+    ) -> OpaqueResolution:
+        """Resolve in page order, retaining completed links within the budget."""
         redirect_urls = extract_opaque_result_urls(
             provider, html, final_url, limit=OPAQUE_RESOLVE_ATTEMPTS
         )
         guard = URLSafetyGuard()
         semaphore = asyncio.Semaphore(OPAQUE_RESOLVE_CONCURRENCY)
+        attempted = 0
 
         async def resolve(url: str) -> str | None:
+            nonlocal attempted
             async with semaphore:
+                attempted += 1
                 return await self._resolve_result_redirect(
                     provider, url, final_url, guard
                 )
 
-        resolved = await asyncio.gather(*(resolve(url) for url in redirect_urls))
-        urls = list(dict.fromkeys(url for url in resolved if url is not None))[
-            :MAX_SEARCH_RESULTS
-        ]
-        return urls, len(redirect_urls)
+        tasks = [asyncio.create_task(resolve(url)) for url in redirect_urls]
+        if not tasks:
+            return OpaqueResolution([], 0, 0, 0, 0)
+        loop = asyncio.get_running_loop()
+        if deadline is None:
+            deadline = loop.time() + SEARCH_PROVIDER_ATTEMPT_TIMEOUT_SECONDS
+        timeout = max(0.0, deadline - loop.time() - OPAQUE_RESOLVE_CLEANUP_SECONDS)
+        try:
+            done, pending = await asyncio.wait(tasks, timeout=timeout)
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+        resolved = [task.result() for task in tasks if task in done]
+        destinations = [url for url in resolved if url is not None]
+        urls = list(dict.fromkeys(destinations))[:MAX_SEARCH_RESULTS]
+        resolution = OpaqueResolution(
+            urls, len(redirect_urls), attempted, len(destinations), len(pending)
+        )
+        logger.info(
+            "result resolution provider={} collected={} attempted={} resolved={} "
+            "returned={} unfinished={}",
+            provider,
+            resolution.collected,
+            resolution.attempted,
+            resolution.resolved,
+            len(urls),
+            resolution.unfinished,
+        )
+        return resolution
 
     async def _resolve_result_redirect(
         self,
@@ -843,16 +901,18 @@ class WebSearchService:
         A defer page hands back a fresh token as its own next hop, so the retry
         it asks for is the same request made after its stated delay.
         """
-        target, defer_url = await self._request_result_target(
+        target, defer = await self._request_result_target(
             provider, url, final_url, guard
         )
         if target is not None:
             return target
-        if defer_url is None:
+        if defer is None:
             return None
-        await asyncio.sleep(OPAQUE_RESOLVE_RETRY_DELAY_SECONDS)
+        await asyncio.sleep(
+            max(OPAQUE_RESOLVE_RETRY_DELAY_SECONDS, defer.delay_seconds)
+        )
         retried, _ = await self._request_result_target(
-            provider, defer_url, final_url, guard
+            provider, defer.url, final_url, guard
         )
         return retried
 
@@ -862,7 +922,7 @@ class WebSearchService:
         url: str,
         final_url: str,
         guard: URLSafetyGuard,
-    ) -> tuple[str | None, str | None]:
+    ) -> tuple[str | None, DeferRedirect | None]:
         """Return (destination, defer target) for one click-through request.
 
         Both are None when the request yields neither: a page with no
@@ -898,9 +958,9 @@ class WebSearchService:
             return target, None
 
     @staticmethod
-    def _defer_target(response: httpx.Response) -> str | None:
+    def _defer_target(response: httpx.Response) -> DeferRedirect | None:
         """The next hop a non-redirect answer declares, if any."""
-        target = parse_defer_redirect_target(response.text, str(response.url))
+        target = parse_defer_redirect(response.text, str(response.url))
         if target is None:
             logger.debug(
                 "result redirect answer carries no destination and no defer "

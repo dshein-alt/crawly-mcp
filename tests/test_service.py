@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -213,7 +214,7 @@ async def test_google_defer_page_is_retried_with_the_token_it_hands_back(
         if ref == "DEFER":
             return httpx.Response(
                 200,
-                text='<meta http-equiv="refresh" content="3;url=/goto?url=FRESH">',
+                text='<meta content="0;url=/goto?url=FRESH" http-equiv="refresh">',
             )
         if ref == "FRESH":
             return httpx.Response(302, headers={"Location": "https://www.python.org/"})
@@ -235,13 +236,13 @@ async def test_google_defer_page_is_retried_with_the_token_it_hands_back(
 
 
 @pytest.mark.asyncio
-async def test_google_resolves_past_the_cap_and_reports_the_throttled_rest(
+async def test_google_resolves_past_the_cap_and_reports_unresolved_links(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Links dropped to throttling must not shrink the answer below the cap.
 
-    Eight result links, five resolvable: asking for only as many links as the
-    caller may receive spends the whole budget on the links that were throttled.
+    Eight result links, three resolvable after the first five fail: asking only
+    for as many links as the caller may receive loses the resolvable links.
     """
     browser = FakeBrowserManager(
         {
@@ -260,10 +261,10 @@ async def test_google_resolves_past_the_cap_and_reports_the_throttled_rest(
 
     def resolve_redirect(request: httpx.Request) -> httpx.Response:
         ref = request.url.params["url"]
-        if ref in {"T6", "T7", "T8"}:
+        if ref in {"T1", "T2", "T3", "T4", "T5"}:
             return httpx.Response(
                 200,
-                text='<meta http-equiv="refresh" content="3;url=/goto?url=SPENT">',
+                text='<meta http-equiv="refresh" content="0;url=/goto?url=SPENT">',
             )
         if ref == "SPENT":
             return httpx.Response(200, text="<html>still throttled</html>")
@@ -280,12 +281,249 @@ async def test_google_resolves_past_the_cap_and_reports_the_throttled_rest(
     await service.aclose()
 
     assert result.status == "ok"
-    assert result.urls == [
-        f"https://example.org/T{n}" for n in range(1, MAX_SEARCH_RESULTS + 1)
-    ]
+    assert result.urls == [f"https://example.org/T{n}" for n in (6, 7, 8)]
     # The caller is told the answer is short because of throttling, not because
     # the page had little on it.
-    assert "5 of 8" in result.attempted[0].detail
+    assert "3 of 8" in result.attempted[0].detail
+    assert "3 of 8" in result.detail
+    assert "5 link(s) yielded no usable destination" in result.detail
+
+
+@pytest.fixture
+def google_opaque_service(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Callable[..., WebSearchService]:
+    monkeypatch.setenv("CRAWLY_SEARCH_PROVIDER_ORDER", "google")
+    monkeypatch.setenv("CRAWLY_SEARCH_MAX_PROVIDERS", "1")
+    monkeypatch.setenv("CRAWLY_SEARCH_JITTER_MS", "0,0")
+    monkeypatch.setattr(URLSafetyGuard, "validate_user_url", AsyncMock())
+    monkeypatch.setattr("crawly_mcp.service.OPAQUE_RESOLVE_CLEANUP_SECONDS", 0.01)
+
+    def create(handler: Callable[..., Any]) -> WebSearchService:
+        browser = FakeBrowserManager(
+            {
+                "https://www.google.com/search?q=python&hl=en": {
+                    "title": "python - Google Search",
+                    "html": (FIXTURES / "google_goto_many.html").read_text(
+                        encoding="utf-8"
+                    ),
+                }
+            }
+        )
+        service = WebSearchService(browser)
+        service._http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        return service
+
+    return create
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("duplicate", [False, True])
+async def test_resolved_counts_precede_cap_and_deduplication(
+    google_opaque_service: Callable[..., WebSearchService], duplicate: bool
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        token = "T1" if duplicate else request.url.params["url"]
+        return httpx.Response(302, headers={"Location": f"https://example.org/{token}"})
+
+    service = google_opaque_service(handler)
+    try:
+        result = await service.search(provider="google", context="python")
+    finally:
+        await service.aclose()
+    assert len(result.urls) == (1 if duplicate else MAX_SEARCH_RESULTS)
+    assert "8 of 8" in result.detail
+    assert "throttled" not in result.detail
+    assert "no usable destination" not in result.detail
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("partial", [True, False])
+async def test_resolution_deadline_retains_results_and_cleans_up(
+    google_opaque_service: Callable[..., WebSearchService],
+    monkeypatch: pytest.MonkeyPatch,
+    partial: bool,
+) -> None:
+    monkeypatch.setattr(
+        "crawly_mcp.service.SEARCH_PROVIDER_ATTEMPT_TIMEOUT_SECONDS", 0.2
+    )
+    active = peak = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        try:
+            token = request.url.params["url"]
+            if not partial or token not in {"T1", "T2"}:
+                await asyncio.Event().wait()
+            return httpx.Response(
+                302, headers={"Location": f"https://example.org/{token}"}
+            )
+        finally:
+            active -= 1
+
+    service = google_opaque_service(handler)
+    try:
+        result = await service.search(provider="google", context="python")
+    finally:
+        await service.aclose()
+    assert result.status == ("ok" if partial else "timeout")
+    assert result.urls == (
+        ["https://example.org/T1", "https://example.org/T2"] if partial else []
+    )
+    assert "budget expired" in (
+        result.detail if partial else result.attempted[0].detail
+    )
+    assert peak == 2
+    assert active == 0
+
+
+@pytest.mark.asyncio
+async def test_external_cancellation_is_not_converted_to_partial_success(
+    google_opaque_service: Callable[..., WebSearchService],
+) -> None:
+    entered = asyncio.Event()
+    active = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal active
+        active += 1
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            active -= 1
+        return httpx.Response(200)
+
+    service = google_opaque_service(handler)
+    task = asyncio.create_task(service.search(provider="google", context="python"))
+    try:
+        await entered.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert active == 0
+    finally:
+        await service.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("retry_status", [200, 302])
+async def test_defer_honors_declared_delay_and_retries_only_once(
+    google_opaque_service: Callable[..., WebSearchService],
+    monkeypatch: pytest.MonkeyPatch,
+    retry_status: int,
+) -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.params["url"])
+        if len(seen) == 2 and retry_status == 302:
+            return httpx.Response(302, headers={"Location": "https://example.org/"})
+        return httpx.Response(
+            200, text='<meta content="7;url=/goto?url=FRESH" http-equiv="refresh">'
+        )
+
+    service = google_opaque_service(handler)
+    sleep = AsyncMock()
+    monkeypatch.setattr("crawly_mcp.service.asyncio.sleep", sleep)
+    base = "https://www.google.com/search?q=python"
+    try:
+        result = await service._resolve_result_redirect(
+            "google", "https://www.google.com/goto?url=OLD", base, URLSafetyGuard()
+        )
+    finally:
+        await service.aclose()
+    assert result == ("https://example.org/" if retry_status == 302 else None)
+    assert seen == ["OLD", "FRESH"]
+    sleep.assert_awaited_once_with(7)
+
+
+@pytest.mark.asyncio
+async def test_opaque_retry_never_requests_foreign_origin(
+    google_opaque_service: Callable[..., WebSearchService],
+) -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.host)
+        return httpx.Response(
+            200,
+            text='<meta content="0;url=https://evil.example/goto?url=FRESH" http-equiv="refresh">',
+        )
+
+    service = google_opaque_service(handler)
+    try:
+        result = await service._resolve_result_redirect(
+            "google",
+            "https://www.google.com/goto?url=OLD",
+            "https://www.google.com/search",
+            URLSafetyGuard(),
+        )
+    finally:
+        await service.aclose()
+    assert result is None
+    assert seen == ["www.google.com"]
+
+
+@pytest.mark.asyncio
+async def test_opaque_ad_links_never_reach_the_resolver(
+    google_opaque_service: Callable[..., WebSearchService],
+) -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        token = request.url.params["url"]
+        seen.append(token)
+        return httpx.Response(302, headers={"Location": f"https://example.org/{token}"})
+
+    service = google_opaque_service(handler)
+    spec = service._browser_manager.specs[
+        "https://www.google.com/search?q=python&hl=en"
+    ]
+    spec["html"] += (
+        '<div data-text-ad="1"><div class="yuRUbf">'
+        '<a class="zReHs" href="/goto?url=AD">Sponsored</a></div></div>'
+    )
+    try:
+        result = await service.search(provider="google", context="python")
+    finally:
+        await service.aclose()
+    assert "AD" not in seen
+    assert "8 of 8" in result.detail
+    assert len(result.urls) == MAX_SEARCH_RESULTS
+
+
+@pytest.mark.asyncio
+async def test_trace_capture_does_not_discard_partial_results(
+    google_opaque_service: Callable[..., WebSearchService],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("CRAWLY_TRACE_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        "crawly_mcp.service.SEARCH_PROVIDER_ATTEMPT_TIMEOUT_SECONDS", 0.3
+    )
+    monkeypatch.setattr("crawly_mcp.service.TRACE_CAPTURE_TIMEOUT_SECONDS", 0.05)
+
+    async def hang(*args: Any, **kwargs: Any) -> None:
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(SearchTrace, "finalize", hang)
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.params["url"] != "T1":
+            await asyncio.Event().wait()
+        return httpx.Response(302, headers={"Location": "https://example.org/"})
+
+    service = google_opaque_service(handler)
+    try:
+        result = await service.search(provider="google", context="python")
+    finally:
+        await service.aclose()
+    assert result.status == "ok"
+    assert result.urls == ["https://example.org/"]
 
 
 @pytest.mark.asyncio

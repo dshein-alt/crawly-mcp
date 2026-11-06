@@ -71,7 +71,13 @@ RESULT_CONTAINERS = {
 # titles through `/goto?url=<opaque>`; the redirect response supplies the real
 # destination. Count these separately so the service can resolve them without
 # reconstructing URLs from display text.
-OPAQUE_RESULT_PATHS = ("/goto?url=",)
+OPAQUE_RESULT_PATHS = ("/goto",)
+
+AD_CONTAINERS = {
+    "google": ["#tads", "#tadsb", "#bottomads", "[data-text-ad]", "[data-ad-slot]"],
+    "duckduckgo": [".result--ad", "[data-testid='ad']"],
+    "yandex": [".serp-item_ad", "[data-fast-name='adv']"],
+}
 
 SEARCH_CONSENT_MARKERS = {
     "duckduckgo": ("consent", "accept all", "agree and continue"),
@@ -378,7 +384,7 @@ def _count_result_anchors(
     for anchor in _result_anchors(soup, provider):
         href = anchor.get("href") or ""
         absolute = urljoin(base_url, href)
-        if any(path in absolute for path in OPAQUE_RESULT_PATHS):
+        if _is_opaque_result_url(absolute, base_url):
             opaque += 1
             continue
         if normalize_result_url(provider, href, base_url=base_url) is not None:
@@ -397,10 +403,62 @@ def _result_anchors(soup: BeautifulSoup, provider: str) -> list:
     containers = RESULT_CONTAINERS[provider]
     hits: list = []
     for anchor in soup.select(combined):
-        if not _in_result_container(anchor, containers):
+        if not _in_result_container(anchor, containers) or _is_ad_anchor(
+            anchor, provider
+        ):
             continue
         hits.append(anchor)
     return hits
+
+
+def _is_ad_anchor(anchor: Tag, provider: str) -> bool:
+    """Reject explicit ad markup and advertising redirect endpoints."""
+    if _is_ad_url(anchor.get("href") or ""):
+        return True
+    ad_labels = {"ad", "ads", "advertisement", "sponsored", "реклама"}
+    for element in (anchor, *anchor.parents):
+        if not isinstance(element, Tag):
+            continue
+        if str(element.get("aria-label", "")).strip().casefold() in ad_labels:
+            return True
+        if any(
+            _match_element(selector, element) for selector in AD_CONTAINERS[provider]
+        ):
+            return True
+    return False
+
+
+def _is_ad_url(url: str) -> bool:
+    try:
+        parsed = urlsplit(url)
+        host = (parsed.hostname or "").rstrip(".").lower()
+    except ValueError:
+        return True
+    return (
+        host == "googleadservices.com"
+        or host.endswith(".googleadservices.com")
+        or (
+            (not host or _is_internal_provider_url("google", host))
+            and parsed.path in {"/aclk", "/pagead/aclk"}
+        )
+    )
+
+
+def _is_opaque_result_url(url: str, base_url: str) -> bool:
+    """Recognize only the current provider origin's actual redirect endpoint."""
+    try:
+        target, base = urlsplit(url), urlsplit(base_url)
+        return (
+            target.scheme in {"http", "https"}
+            and target.scheme == base.scheme
+            and target.netloc.lower() == base.netloc.lower()
+            and target.username is None
+            and target.password is None
+            and target.path in OPAQUE_RESULT_PATHS
+            and bool(parse_qs(target.query).get("url"))
+        )
+    except ValueError:
+        return False
 
 
 def _in_result_container(anchor, containers: list[str]) -> bool:
@@ -425,7 +483,7 @@ def extract_search_results(provider: str, html: str, base_url: str) -> list[str]
         href = anchor.get("href")
         if not href:
             continue
-        if any(path in urljoin(base_url, href) for path in OPAQUE_RESULT_PATHS):
+        if _is_opaque_result_url(urljoin(base_url, href), base_url):
             continue
         normalized = normalize_result_url(provider, href, base_url=base_url)
         if normalized is None or normalized in seen:
@@ -470,7 +528,7 @@ def extract_opaque_result_urls(
     for anchor in _result_anchors(soup, provider):
         href = anchor.get("href") or ""
         absolute = urljoin(base_url, href)
-        if not any(path in absolute for path in OPAQUE_RESULT_PATHS):
+        if not _is_opaque_result_url(absolute, base_url):
             continue
         if absolute in seen:
             continue
@@ -481,30 +539,38 @@ def extract_opaque_result_urls(
     return urls
 
 
-# A defer page names its own next hop: `<meta http-equiv="refresh"
-# content="3;url=/goto?url=...">`. The destination of the result is not in the
-# markup at all, so this is the only target the page yields.
 _META_REFRESH_RE = re.compile(
-    r"""<meta[^>]+http-equiv=["']?refresh["']?[^>]+content=["']?"""
-    r"""\s*\d+\s*;\s*url=([^"'>\s]+)""",
+    r"\s*(\d+(?:\.\d+)?)\s*;\s*url\s*=\s*(.*?)\s*$",
     re.IGNORECASE,
 )
 
 
-def parse_defer_redirect_target(html: str, base_url: str) -> str | None:
-    """Return the redirect endpoint a defer page points at, if it names one.
+@dataclass(frozen=True, slots=True)
+class DeferRedirect:
+    url: str
+    delay_seconds: float
 
-    Only a target that is itself a result redirect endpoint counts. A page
-    cannot steer the resolver to an arbitrary host by declaring a refresh; the
-    retry stays on the provider's own click-through path.
-    """
-    match = _META_REFRESH_RE.search(html)
-    if match is None:
-        return None
-    target = urljoin(base_url, match.group(1))
-    if not any(path in target for path in OPAQUE_RESULT_PATHS):
-        return None
-    return target
+
+def parse_defer_redirect(html: str, base_url: str) -> DeferRedirect | None:
+    """Read the declared delay and next hop, restricted to the same endpoint."""
+    soup = BeautifulSoup(html, "html.parser")
+    for meta in soup.find_all("meta"):
+        if str(meta.get("http-equiv", "")).strip().lower() != "refresh":
+            continue
+        match = _META_REFRESH_RE.fullmatch(str(meta.get("content", "")))
+        if match is None:
+            continue
+        raw_target = match.group(2).strip("\"'")
+        target = urljoin(base_url, raw_target)
+        if _is_opaque_result_url(target, base_url):
+            return DeferRedirect(target, float(match.group(1)))
+    return None
+
+
+def parse_defer_redirect_target(html: str, base_url: str) -> str | None:
+    """Return a defer page's same-origin result redirect endpoint, if any."""
+    redirect = parse_defer_redirect(html, base_url)
+    return redirect.url if redirect is not None else None
 
 
 def normalize_result_url(provider: str, href: str, *, base_url: str) -> str | None:
@@ -521,6 +587,8 @@ def normalize_result_url(provider: str, href: str, *, base_url: str) -> str | No
     candidate = unquote(redirect_url) if redirect_url else absolute
     normalized = urlsplit(candidate)
     if normalized.scheme not in {"http", "https"}:
+        return None
+    if _is_ad_url(candidate):
         return None
     if _is_internal_provider_url(provider, normalized.hostname):
         return None
