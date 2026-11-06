@@ -1,0 +1,53 @@
+# Local end-to-end stack for the behavioural test suite.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.test.yml up -d --build
+#
+# Adds to the normal example stack:
+#   - builds crawly-mcp from this checkout instead of pulling GHCR
+#   - a `fixture-site` nginx serving deterministic pages under
+#     tests/fixtures/site, so blocked / empty / site-search behaviour is
+#     asserted against known HTML rather than against a live provider
+#   - `crawly-mcp-broken`, pinned to an unreachable SearXNG with no other
+#     provider in its cascade order, so "nothing answered" is reproducible
+#
+# Live DuckDuckGo / Google probes are deliberately not part of this stack;
+# they are run best-effort by scripts/e2e_stack.py and never fail the suite.
+
+services:
+  crawly-mcp:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    image: crawly-mcp:e2e
+    environment:
+      CRAWLY_SEARXNG_URL: "http://searxng:8080/"
+      # The fixture site is on the compose network, so it is not a global
+      # address; name it explicitly instead of loosening the guard globally.
+      CRAWLY_SSRF_ALLOW: "fixture-site"
+      CRAWLY_LOG_LEVEL: "${CRAWLY_LOG_LEVEL:-INFO}"
+    # No `ports:` here: the base compose file already publishes the MCP
+    # transport on 127.0.0.1:${CRAWLY_HOST_PORT:-10000}, which is where
+    # scripts/e2e_stack.py expects it.
+    depends_on:
+      - searxng
+      - fixture-site
+
+  crawly-mcp-broken:
+    image: crawly-mcp:e2e
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    environment:
+      # Port 9 (discard) on the SearXNG host: connection refused, every time.
+      CRAWLY_SEARXNG_URL: "http://searxng:9/"
+      CRAWLY_SEARCH_PROVIDER_ORDER: "searxng"
+      CRAWLY_LOG_LEVEL: "${CRAWLY_LOG_LEVEL:-INFO}"
+    ports:
+      - "127.0.0.1:${CRAWLY_E2E_BROKEN_PORT:-10001}:8000"
+    depends_on:
+      - searxng
+
+  fixture-site:
+    image: docker.io/library/nginx:alpine
+    volumes:
+      - ../../tests/fixtures/site:/usr/share/nginx/html:ro
