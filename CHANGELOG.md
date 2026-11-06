@@ -4,20 +4,21 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.4.5] - 2026-11-06
-
-### Fixed
-
-- Give a search wall that says it will resolve itself a bounded chance to finish, so a provider mid-check is no longer reported as a refusal, and report the page the check actually ended on.
-- Report a wall that asks a human to click at once, naming the wall the provider ended on, and spend no window waiting on it.
-
 ## [0.4.4] - 2026-11-06
 
+### Added
+
+- Add Yandex wall sampling with measured timestamps and paired provider comparison scripts.
+
 ### Fixed
 
-- Collect more Google click-through result links than the return cap and resolve them a few at a time, so links the provider throttles no longer shrink the answer below what the page offered.
-- Retry a throttled click-through result link once, following the fresh redirect token the throttle page hands back.
-- Report how many click-through result links resolved when the provider throttled the rest, instead of returning a short URL list with no explanation.
+- Resolve more organic Google click-through links within the search budget and retain completed destinations when resolution runs out of time.
+- Parse deferred redirects regardless of HTML attribute order and honor the declared retry delay, restricting retries to the same origin and redirect endpoint.
+- Report resolved and unfinished link counts in the top-level search detail without mistaking result limits or duplicate destinations for throttling.
+- Exclude detectable sponsored search links and advertising redirects from result collection and resolution.
+- Allow automatic Yandex browser checks and incomplete search pages to settle before classifying the outcome.
+- Report human verification walls immediately and retain the last successful page reading through navigation errors and stalled reads.
+- Bound search settle reads and trace capture by the provider deadline.
 
 ## [0.4.3] - 2026-11-06
 
