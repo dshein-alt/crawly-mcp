@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.5] - 2026-11-06
+
+### Fixed
+
+- Give a search wall that says it will resolve itself a bounded chance to finish, so a provider mid-check is no longer reported as a refusal, and report the page the check actually ended on.
+- Report a wall that asks a human to click at once, naming the wall the provider ended on, and spend no window waiting on it.
+
 ## [0.4.4] - 2026-11-06
 
 ### Fixed

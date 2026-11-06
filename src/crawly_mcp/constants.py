@@ -132,6 +132,19 @@ FETCH_TOTAL_TIMEOUT_SECONDS = 35
 CHALLENGE_SETTLE_TIMEOUT_SECONDS = 10
 TRACE_CAPTURE_TIMEOUT_SECONDS = 2
 
+# How long a search page that landed on a wall gets to finish a provider's own
+# automatic browser check. Yandex's `/showcaptchafast` runs a script that
+# submits a fingerprint and redirects to the results page it was aiming at, and
+# the fork lands within about a second of navigation; the window is wider to
+# cover the results rendering after the redirect, which is where the result
+# links appear. A wall that asks a human to prove something is reported at once
+# and never spends this window.
+SEARCH_WALL_SETTLE_SECONDS = 3.0
+# Poll spacing inside the settle window.
+SEARCH_WALL_SETTLE_SAMPLE_SECONDS = 0.25
+# Leave room to read the settled page and raise before the attempt deadline.
+SEARCH_WALL_SETTLE_CLEANUP_SECONDS = 0.5
+
 STANDARD_USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"

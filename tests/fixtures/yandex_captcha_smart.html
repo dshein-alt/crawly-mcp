@@ -1,0 +1,51 @@
+<!doctype html>
+<!--
+  Yandex SmartCaptcha, captured 2026-11-06 from
+  https://yandex.ru/showcaptcha?cc=1&form-fb-hint=... . Title "Вы не робот?".
+  This is the wall the automatic check falls through to when it is not
+  satisfied. It asks a human to click #js-button ("Я не робот") and was
+  observed to stay put for 20s: nothing on the page progresses on its own, so
+  it is reported as a block at once and no settle window is spent on it.
+  Note the footer offers the Search API for automated queries; the word
+  "автоматически" appears there, which is why the automatic-check markers are
+  full phrases. Trimmed to the parts that identify it.
+-->
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <title>Вы не робот?</title>
+  </head>
+  <body>
+    <div class="CheckboxCaptcha CheckboxCaptcha_first_letter_highlighted">
+      <div class="CheckboxCaptcha-Inner">
+        <div class="Text Text_weight_regular Text_typography_control-xxl CheckboxCaptcha-LabelText">
+          Подтвердите, что запросы отправляли вы, а не робот
+        </div>
+        <div class="Text Text_weight_regular Text_typography_control-l CheckboxCaptcha-SecondaryText">
+          Нам очень жаль, но запросы с вашего устройства похожи на автоматические.
+          Почему это могло произойти?
+        </div>
+        <div class="CheckboxCaptcha-Checkbox">
+          <span class="CheckboxCaptcha-Button" id="js-button">Я не робот</span>
+          <a class="CheckboxCaptcha-Anchor" href="#">Нажмите, чтобы продолжить</a>
+        </div>
+        <div class="Text Text_weight_regular Text_typography_control-s">
+          Yandex SmartCaptcha
+        </div>
+      </div>
+      <div class="CaptchaLinks CaptchaLinks-Links">
+        Если у вас возникли проблемы, пожалуйста, воспользуйтесь формой обратной
+        связи. Если вам нужно автоматически задавать запросы к Поиску, используйте
+        Yandex Search API v2
+      </div>
+      <div class="CaptchaId">9711039132897917428 : 1793973201</div>
+      <form id="checkbox-captcha-form" action="/checkcaptcha?key=caec6cac-da86eae7">
+        <input type="submit" id="js-button" value="Я не робот" />
+        <input type="hidden" name="rdata" value="eyJhMSI6Im53UFhjN1l0VU5Sb21BPT07MCIsImEy" />
+        <input type="hidden" name="pdata" value="eyJwb3dOb25jZSI6IjAwMDAwMWExYjEyMmFhZDNk" />
+        <input type="hidden" name="tdata" value="" />
+        <input type="hidden" name="picasso" value="W3sic2VlZCI6MzgxLCJyb3VuZHMiOjUsIndpZHRo" />
+      </form>
+    </div>
+  </body>
+</html>

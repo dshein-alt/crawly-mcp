@@ -43,6 +43,8 @@ An empty `urls` list with a status other than `no_results` is a tool failure, ne
 
 A provider is retried past when it is `blocked`, `unavailable`, `timeout`, or `navigation_failed`. A provider that reports `no_results` **stops** the cascade: an honest empty answer is an answer, and cascading on top of it turns "the topic is empty" into three more requests. Providers that fail repeatedly are skipped as fill slots in later calls, and the `providers` tool reports them as `skipped`.
 
+A wall is only reported once the provider has finished becoming one. Some providers serve a page that says it will carry on by itself — a browser check that submits a fingerprint and redirects to the page it was aiming at. Reading that page once reports a refusal on a page that was about to answer, so a wall that promises to continue gets a bounded window (about a second in practice, capped by the provider's own attempt budget) and the page it ends on is what gets reported. A wall that asks a human to click promises no such thing: it is reported at once, names the wall the provider ended on, and costs no latency.
+
 ### Configuring provider priority and exclusion
 
 Operators own the provider set; callers only ever see what survives it.

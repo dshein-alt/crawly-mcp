@@ -710,3 +710,66 @@ def test_ad_endpoint_name_on_an_unrelated_site_is_not_ad_evidence() -> None:
         normalize_result_url("google", url, base_url="https://www.google.com/search")
         == url
     )
+
+
+def test_yandexs_automatic_browser_check_is_a_wall_that_promises_to_continue() -> None:
+    """/showcaptchafast runs a script and redirects; it is not a refusal yet.
+
+    The page submits a fingerprint to /checkcaptchafast, which redirects to the
+    results page named in `retpath`. Saying so is what lets the service give it
+    the chance to finish instead of reporting a block on a page that was about
+    to answer.
+    """
+    evidence = classify_search_page(
+        "yandex",
+        "https://yandex.ru/showcaptchafast?d=EA09&retpath=aHR0cHM6Ly95YW5kZXgucnUvc2VhcmNo",
+        "Верификация",
+        _fixture("yandex_captcha_auto.html"),
+        query="python",
+    )
+    assert evidence.kind == "captcha"
+    assert evidence.auto_continues is True
+    assert evidence.mid_flight is True
+
+
+def test_yandexs_smartcaptcha_is_a_wall_that_asks_a_human() -> None:
+    """The checkbox wall promises nothing, so nothing is spent waiting on it.
+
+    The footer invites automated queries to use the Search API and contains
+    "автоматически"; a marker as loose as that word would read this wall as a
+    check in progress and stall the cascade for nothing.
+    """
+    evidence = classify_search_page(
+        "yandex",
+        "https://yandex.ru/showcaptcha?cc=1&form-fb-hint=2.1.d1ff",
+        "Вы не робот?",
+        _fixture("yandex_captcha_smart.html"),
+        query="python",
+    )
+    assert evidence.kind == "captcha"
+    assert evidence.auto_continues is False
+    assert evidence.mid_flight is False
+
+
+def test_a_script_interstitial_that_never_finished_its_redirect_is_mid_flight() -> None:
+    """ "checking your browser" with no results is a page still in motion."""
+    evidence = classify_search_page(
+        "duckduckgo",
+        "https://duckduckgo.com/?q=patchright&ia=web",
+        "patchright at DuckDuckGo",
+        _fixture("duckduckgo_shell.html"),
+    )
+    assert evidence.kind == "shell"
+    assert evidence.mid_flight is True
+
+
+def test_a_results_page_is_never_something_to_wait_on() -> None:
+    evidence = classify_search_page(
+        "yandex",
+        "https://yandex.ru/search/?text=python",
+        "python - Yandex Search",
+        _fixture("yandex_results.html"),
+        query="python",
+    )
+    assert evidence.kind == "results"
+    assert evidence.mid_flight is False

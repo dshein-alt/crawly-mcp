@@ -38,14 +38,56 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 
 class FakePage:
+    """A provider page.
+
+    `install_frames` gives it frames to walk through, which is how a provider
+    mid-check is expressed: it serves one page and lands on another a second
+    later, so a static fake cannot show the case that matters — a first reading
+    that is a wall and a later reading that is the answer.
+    """
+
     def __init__(self, spec: dict[str, Any]) -> None:
         self.spec = spec
-        self.url = "about:blank"
+        self._url = "about:blank"
+        self._frames: list[dict[str, str]] = []
+        self._index = 0
+        self.reads = 0
+
+    def install_frames(self, frames: list[dict[str, str]]) -> None:
+        self._frames = frames
+        self._index = 0
+
+    @property
+    def _frame(self) -> dict[str, str] | None:
+        if not self._frames:
+            return None
+        return self._frames[min(self._index, len(self._frames) - 1)]
+
+    @property
+    def url(self) -> str:
+        frame = self._frame
+        if frame is not None:
+            return frame.get("url", self._url)
+        return self._url
+
+    @url.setter
+    def url(self, value: str) -> None:
+        self._url = value
 
     async def title(self) -> str:
+        frame = self._frame
+        if frame is not None:
+            return frame.get("title", "")
         return self.spec.get("title", "")
 
     async def content(self) -> str:
+        self.reads += 1
+        frame = self._frame
+        if frame is not None:
+            html = frame.get("html", "")
+            if self._index < len(self._frames) - 1:
+                self._index += 1
+            return html
         raised = self.spec.get("content_raises")
         if raised is not None:
             raise PlaywrightError(raised)
@@ -103,6 +145,12 @@ class FakeBrowserManager:
             # warmup or unknown URL — silently ignore
             return
         page.spec = self.specs[url]
+        frames = page.spec.get("frames")
+        if frames is not None:
+            # Each frame names where the browser stands at that moment, so the
+            # page walks from a wall to what the check redirects to.
+            page.install_frames(frames)
+            return
         # A provider can leave the browser on a different address than the one
         # it was asked for (Google's /sorry, DuckDuckGo's /static-pages/418).
         page.url = page.spec.get("final_url", url)
@@ -1219,3 +1267,146 @@ async def test_browser_acquisition_failure_cascades(
     assert manager.search_context.await_count == 2
     if stage == "page":
         failed_context.close.assert_awaited_once()
+
+
+YANDEX_SEARCH_URL = "https://yandex.ru/search/?text=python"
+
+
+def _yandex_frames() -> list[dict[str, str]]:
+    """The captured check page, then the results page it redirects to."""
+    return [
+        {
+            "url": "https://yandex.ru/showcaptchafast?d=EA09&retpath=x",
+            "title": "Верификация",
+            "html": (FIXTURES / "yandex_captcha_auto.html").read_text(encoding="utf-8"),
+        },
+        {
+            "url": YANDEX_SEARCH_URL,
+            "title": "python - Yandex Search",
+            "html": (FIXTURES / "yandex_results.html").read_text(encoding="utf-8"),
+        },
+    ]
+
+
+def _yandex_smartcaptcha_frames() -> list[dict[str, str]]:
+    """The check page, then the checkbox wall it falls through to."""
+    return [
+        {
+            "url": "https://yandex.ru/showcaptchafast?d=EA09&retpath=x",
+            "title": "Верификация",
+            "html": (FIXTURES / "yandex_captcha_auto.html").read_text(encoding="utf-8"),
+        },
+        {
+            "url": "https://yandex.ru/showcaptcha?cc=1",
+            "title": "Вы не робот?",
+            "html": (FIXTURES / "yandex_captcha_smart.html").read_text(
+                encoding="utf-8"
+            ),
+        },
+    ]
+
+
+def _allow_all(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def allow_all(self: object, url: str) -> None:
+        del self, url
+
+    monkeypatch.setattr(
+        "crawly_mcp.service.URLSafetyGuard.validate_user_url", allow_all
+    )
+
+
+@pytest.mark.asyncio
+async def test_yandexs_automatic_check_that_reaches_results_is_not_a_block(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The wall that was about to answer is reported as an answer.
+
+    Yandex's /showcaptchafast submits a fingerprint and redirects to the
+    results. Reading the page once reported `blocked` with zero URLs; the
+    settled reading is the results page, and the caller gets its URLs.
+    """
+    _allow_all(monkeypatch)
+    browser = FakeBrowserManager({YANDEX_SEARCH_URL: {"frames": _yandex_frames()}})
+    service = WebSearchService(browser)
+    monkeypatch.setenv("CRAWLY_SEARCH_MAX_PROVIDERS", "1")
+
+    resp = await service.search(provider="yandex", context="python")
+
+    assert resp.status == "ok"
+    assert resp.provider == "yandex"
+    assert resp.urls
+    assert resp.attempted[0].page_kind == "results"
+
+
+@pytest.mark.asyncio
+async def test_yandexs_smartcaptcha_stays_blocked_and_spends_no_settle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A wall that asks a human is refused at once, and stays refused.
+
+    The check falls through to the checkbox, which promises nothing; the block
+    is preserved, it names the wall the provider ended on, and no window is
+    burned waiting on a page that will not move.
+    """
+    _allow_all(monkeypatch)
+    browser = FakeBrowserManager(
+        {YANDEX_SEARCH_URL: {"frames": _yandex_smartcaptcha_frames()}}
+    )
+    service = WebSearchService(browser)
+    monkeypatch.setenv("CRAWLY_SEARCH_MAX_PROVIDERS", "1")
+
+    resp = await service.search(provider="yandex", context="python")
+
+    assert resp.status == "blocked"
+    assert resp.next_action != "refine_query"  # a refusal, not an empty web
+    assert resp.urls == []
+    attempt = resp.attempted[0]
+    assert attempt.page_kind == "captcha"
+    assert attempt.final_url == "https://yandex.ru/showcaptcha?cc=1"
+    assert browser.context.pages[0].reads == 2  # wall, then the checkbox
+
+
+@pytest.mark.asyncio
+async def test_yandexs_check_that_never_finishes_is_a_block_not_a_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A settle that runs out ends as the wall it is, inside its budget."""
+    _allow_all(monkeypatch)
+    monkeypatch.setattr("crawly_mcp.service.SEARCH_WALL_SETTLE_SECONDS", 0.3)
+    stuck = _yandex_frames()[:1] * 4
+    browser = FakeBrowserManager({YANDEX_SEARCH_URL: {"frames": stuck}})
+    service = WebSearchService(browser)
+    monkeypatch.setenv("CRAWLY_SEARCH_MAX_PROVIDERS", "1")
+
+    resp = await service.search(provider="yandex", context="python")
+
+    assert resp.status == "blocked"
+    assert resp.attempted[0].page_kind == "captcha"
+
+
+@pytest.mark.asyncio
+async def test_a_walled_yandex_cascades_to_the_next_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The block is one provider's answer, not the end of the search."""
+    _allow_all(monkeypatch)
+    html = (FIXTURES / "duckduckgo_results.html").read_text(encoding="utf-8")
+    browser = FakeBrowserManager(
+        {
+            YANDEX_SEARCH_URL: {"frames": _yandex_smartcaptcha_frames()},
+            "https://duckduckgo.com/?q=python&ia=web": {
+                "title": "python at DuckDuckGo",
+                "html": html,
+            },
+        }
+    )
+    service = WebSearchService(browser)
+    monkeypatch.setenv("CRAWLY_SEARCH_PROVIDER_ORDER", "yandex,duckduckgo")
+    monkeypatch.setenv("CRAWLY_SEARCH_MAX_PROVIDERS", "2")
+
+    resp = await service.search(context="python")
+
+    assert resp.status == "ok"
+    assert resp.provider == "duckduckgo"
+    assert resp.attempted[0].provider == "yandex"
+    assert resp.attempted[0].status == "blocked"

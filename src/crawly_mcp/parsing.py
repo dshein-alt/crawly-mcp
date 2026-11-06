@@ -140,6 +140,24 @@ SEARCH_ZERO_RESULT_MARKERS = {
     ),
 }
 
+# A page that says the provider will carry on by itself: an automatic browser
+# check that runs a script, submits a fingerprint and redirects to the page it
+# was aiming at. This is the only reason to wait on a wall. A wall that asks a
+# human to prove something (a CAPTCHA checkbox, a "we detected unusual traffic"
+# apology) promises no such thing, is reported at once, and costs no latency.
+#
+# Yandex is the provider measured here: `/showcaptchafast` runs a script that
+# posts a fingerprint to `/checkcaptchafast`, which redirects to the results.
+# `/showcaptcha` is the SmartCaptcha checkbox and is deliberately absent.
+SEARCH_AUTOMATIC_CHECK_MARKERS: dict[str, tuple[str, ...]] = {
+    "yandex": (
+        "сайт откроется автоматически",
+        "подождите несколько секунд",
+        "проверка браузера перед переходом",
+        "tmgrdfrend",
+    ),
+}
+
 # A page that rendered this little text and no result containers never reached
 # a results view at all: DuckDuckGo serves a "redirecting to the non-JavaScript
 # site" interstitial, and Google serves a redirect interstitial, both with the
@@ -176,10 +194,20 @@ class SearchPageEvidence:
     text_chars: int = 0
     marker: str | None = None
     detail: str = ""
+    # True when the page states that the provider itself will finish the job:
+    # an automatic browser check mid-flight. The service waits on such a wall
+    # and on a `shell`, which is a script interstitial that never completed its
+    # redirect; it does not wait on a wall that asks a human to click.
+    auto_continues: bool = False
 
     @property
     def extractable(self) -> bool:
         return self.kind == "results" and self.result_anchors > 0
+
+    @property
+    def mid_flight(self) -> bool:
+        """Whether this page is a provider that has not finished answering."""
+        return self.auto_continues or self.kind == "shell"
 
 
 def classify_search_page(
@@ -291,14 +319,20 @@ def _strip_body_query_echoes(text: str, query: str) -> str:
 def _wall_check(
     provider: str, haystack: str, evidence: SearchPageEvidence
 ) -> Verdict | None:
-    del evidence
     marker = _first_marker(haystack, SEARCH_CAPTCHA_MARKERS.get(provider, ()))
-    if marker is not None:
-        return "captcha", marker, _wall_detail(marker)
-    marker = _first_marker(haystack, SEARCH_CONSENT_MARKERS.get(provider, ()))
-    if marker is not None:
+    if marker is None:
+        marker = _first_marker(haystack, SEARCH_CONSENT_MARKERS.get(provider, ()))
+        if marker is None:
+            return None
         return "consent", marker, _wall_detail(marker)
-    return None
+    # A CAPTCHA wall that promises to resolve itself is a check in progress, and
+    # saying so is what lets the service wait on it; the wall that does not is
+    # reported as the refusal it is.
+    evidence.auto_continues = (
+        _first_marker(haystack, SEARCH_AUTOMATIC_CHECK_MARKERS.get(provider, ()))
+        is not None
+    )
+    return "captcha", marker, _wall_detail(marker)
 
 
 def _shell_check(

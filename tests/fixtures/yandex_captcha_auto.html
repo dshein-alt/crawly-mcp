@@ -1,0 +1,49 @@
+<!doctype html>
+<!--
+  Yandex automatic browser check, captured 2026-11-06 from
+  https://yandex.ru/showcaptchafast?d=...&retpath=<base64 of the search URL>.
+  Title "Верификация". The page is not a wall in its own right: the scripts
+  compute a fingerprint, fill #tmgrdfrend-fingerprint / #tmgrdfrend-chstate,
+  auto-submit the form to /checkcaptchafast, and the response redirects to
+  retpath — the results page the search was aiming at. The visible copy says so
+  ("wait a few seconds — after the check the site will open automatically").
+  Trimmed to the parts that identify it; scripts and styles removed.
+-->
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <title>Верификация</title>
+    <script src="/tmgrdfrend.fp.js"></script>
+    <script src="/tmgrdfrend.blink-check.main.CRbweAeH.js"></script>
+  </head>
+  <body>
+    <div class="CaptchaCaptcha">
+      <div class="Text Text_weight_bold Text_typography_display-S">
+        Проверка браузера перед переходом на yandex.ru
+      </div>
+      <div class="Text Text_weight_regular Text_typography_control-l">
+        Подождите несколько секунд - после проверки сайт откроется автоматически
+      </div>
+      <div class="CaptchaLinks CaptchaLinks_Links">
+        Если у вас возникли проблемы, пожалуйста, воспользуйтесь формой обратной
+        связи
+      </div>
+      <div class="CaptchaId">9711028658675780932 : 1793973045</div>
+      <form
+        id="tmgrdfrend-form"
+        method="POST"
+        action="/checkcaptchafast?d=EA09BE2851B5BA0FC0F1BB45BEFF2D86&amp;retpath=aHR0cHM6Ly95YW5kZXgucnUvc2VhcmNoP3RleHQ9cHl0aG9u"
+      >
+        <input type="hidden" name="version" value="1.5.0" />
+        <input type="hidden" name="uniquekey" value="9711028658675780932" />
+        <input type="hidden" id="tmgrdfrend-chstate" name="chstate" value="" />
+        <input
+          type="hidden"
+          id="tmgrdfrend-fingerprint"
+          name="fingerprint"
+          value=""
+        />
+      </form>
+    </div>
+  </body>
+</html>

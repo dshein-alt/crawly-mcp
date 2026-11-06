@@ -21,7 +21,7 @@ from patchright.async_api import (
 from pydantic import ValidationError
 
 from crawly_mcp.browser import BrowserManager, SearchContextHandle
-from crawly_mcp.challenge import resolve_fetch_content
+from crawly_mcp.challenge import resolve_fetch_content, settle_search_page
 from crawly_mcp.constants import (
     ALLOWED_PROVIDERS,
     CHALLENGE_SETTLE_TIMEOUT_SECONDS,
@@ -49,6 +49,9 @@ from crawly_mcp.constants import (
     SEARCH_CONTEXT_ACQUIRE_TIMEOUT_SECONDS,
     SEARCH_PAGE_TIMEOUT_SECONDS,
     SEARCH_PROVIDER_ATTEMPT_TIMEOUT_SECONDS,
+    SEARCH_WALL_SETTLE_CLEANUP_SECONDS,
+    SEARCH_WALL_SETTLE_SAMPLE_SECONDS,
+    SEARCH_WALL_SETTLE_SECONDS,
     SEARXNG_PER_INSTANCE_TIMEOUT_SECONDS,
     TRACE_CAPTURE_TIMEOUT_SECONDS,
     WARMUP_PAGE_TIMEOUT_SECONDS,
@@ -154,6 +157,10 @@ class SearchTrace:
         self.first_use = False
         self.warmup_attempted = False
         self.jitter_ms = 0
+        # Seconds spent waiting out a provider's own automatic check, 0.0 when
+        # no wall was mid-flight. Reads as "the block was reported after the
+        # check had its chance" rather than "the block was reported at once".
+        self.wall_settled_s = 0.0
         self.final_url = ""
         self.final_title = ""
         self.block_marker: str | None = None
@@ -292,6 +299,7 @@ class SearchTrace:
             "first_use": self.first_use,
             "warmup_attempted": self.warmup_attempted,
             "jitter_ms": self.jitter_ms,
+            "wall_settled_s": self.wall_settled_s,
             "context_options": self.context_options,
             "final_url": self.final_url,
             "final_title": self.final_title,
@@ -720,6 +728,11 @@ class WebSearchService:
 
         title, html = await self._read_page(page, provider)
         evidence = classify_search_page(provider, page.url, title, html, query=query)
+        title, html, evidence, settled_s = await self._settle_wall(
+            page, provider, query, title, html, evidence, deadline=deadline
+        )
+        if trace is not None:
+            trace.wall_settled_s = settled_s
         self._record_probe_trace(trace, page, title, evidence)
         logger.info(
             "search probe provider={} page_kind={} anchors={} opaque={} "
@@ -735,6 +748,62 @@ class WebSearchService:
         return await self._verdict_from_evidence(
             provider, html, page.url, evidence, trace, deadline=deadline
         )
+
+    async def _settle_wall(
+        self,
+        page: Any,
+        provider: str,
+        query: str,
+        title: str,
+        html: str,
+        evidence: SearchPageEvidence,
+        *,
+        deadline: float,
+    ) -> tuple[str, str, SearchPageEvidence, float]:
+        """Give a wall that promises to resolve itself the chance to do so.
+
+        A provider mid-check serves a page that says it will carry on, and the
+        check lands about a second later: on the results page, or on the wall
+        that asks a human to click. Classifying the first reading reports a
+        refusal on a page that was about to answer, and names the transient
+        interstitial as the wall. The settled reading is the page the provider
+        actually ended on, which is what the caller is told.
+
+        The window is capped by the provider attempt's own deadline, less the
+        time to read the settled page and answer, so a settle never turns a
+        wall into a timeout. A wall that asks a human to click is not waited
+        on at all, and costs nothing it did not cost before.
+        """
+        if not evidence.mid_flight:
+            return title, html, evidence, 0.0
+
+        loop = asyncio.get_running_loop()
+        window_end = min(
+            loop.time() + SEARCH_WALL_SETTLE_SECONDS,
+            deadline - SEARCH_WALL_SETTLE_CLEANUP_SECONDS,
+        )
+        if window_end - loop.time() <= 0:
+            logger.info(
+                "search wall mid-flight but no settle budget left "
+                "provider={} kind={} marker={!r}",
+                provider,
+                evidence.kind,
+                evidence.marker,
+            )
+            return title, html, evidence, 0.0
+
+        started = loop.time()
+        snapshot, settled_evidence = await settle_search_page(
+            page,
+            provider=provider,
+            query=query,
+            classify=classify_search_page,
+            window_seconds=SEARCH_WALL_SETTLE_SECONDS,
+            sample_seconds=SEARCH_WALL_SETTLE_SAMPLE_SECONDS,
+            deadline=window_end,
+        )
+        settled_s = round(loop.time() - started, 2)
+        return snapshot.title, snapshot.html, settled_evidence, settled_s
 
     async def _prepare_provider_page(
         self,
