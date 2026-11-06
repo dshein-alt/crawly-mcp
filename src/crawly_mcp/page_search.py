@@ -33,13 +33,20 @@ from crawly_mcp.constants import (
     MAX_SEARCH_RESULTS,
     PAGE_SEARCH_SNIPPET_CONTEXT_CHARS,
     PAGE_SEARCH_TIER_TIMEOUT_SECONDS,
+    NextAction,
+    ToolStatus,
 )
 from crawly_mcp.errors import (
     InvalidInputError,
     NavigationFailedError,
     TimeoutExceededError,
 )
-from crawly_mcp.models import PageSearchRequest, PageSearchResponse, PageSearchResult
+from crawly_mcp.models import (
+    PageSearchRequest,
+    PageSearchResponse,
+    PageSearchResult,
+    TierAttempt,
+)
 from crawly_mcp.parsing import (
     SearchFormHit,
     build_snippets,
@@ -265,9 +272,20 @@ def _linked_results_from_search_html(
     *,
     base_url: str | None,
 ) -> list[PageSearchResult]:
-    containers = list(soup.select("#search-results, .search-results, main"))
+    """Harvest results from a rendered site-search page.
+
+    Only anchors inside a real results container count. Falling back to the
+    whole page made a client-side search page that rendered nothing report its
+    own navigation bar as the top five hits, which is worse than reporting
+    nothing: the caller cannot tell a scraped nav bar from a ranked result.
+    """
+    containers = soup.select(
+        "#search-results, .search-results, .search-results-list, "
+        "ul#search-results, main #search-results, main .search-results, "
+        "[role='main'] #search-results"
+    )
     if not containers:
-        containers = [soup]
+        return []
 
     results: list[PageSearchResult] = []
     seen_urls: set[str] = set()
@@ -275,6 +293,8 @@ def _linked_results_from_search_html(
         for anchor in container.select("a[href]"):
             raw_href = (anchor.get("href") or "").strip()
             if not raw_href or raw_href.startswith(("#", "javascript:", "mailto:")):
+                continue
+            if anchor.find_parent(["nav", "header", "footer"]) is not None:
                 continue
             url = urljoin(base_url, raw_href) if base_url else raw_href
             if url in seen_urls:
@@ -510,15 +530,21 @@ class PageSearchService:
         try:
             async with asyncio.timeout(FETCH_TOTAL_TIMEOUT_SECONDS):
                 source_html = await self._fetch_source_html(request.url)
-                attempted: list[str] = []
+                attempted: list[TierAttempt] = []
 
                 for tier in self._tiers:
                     if tier.name == "text":
                         break
                     hit = tier.detect(source_html, request.url)
                     if hit is None:
+                        attempted.append(
+                            TierAttempt(
+                                tier=tier.name,
+                                outcome="unavailable",
+                                detail=(f"site exposes no {tier.name} search facility"),
+                            )
+                        )
                         continue
-                    attempted.append(tier.name)
                     try:
                         outcome = await asyncio.wait_for(
                             tier.execute(hit, request.query),
@@ -526,6 +552,16 @@ class PageSearchService:
                         )
                     except TimeoutError:
                         logger.warning("page_search tier={} timed out", tier.name)
+                        attempted.append(
+                            TierAttempt(
+                                tier=tier.name,
+                                outcome="failed",
+                                detail=(
+                                    f"site search facility timed out after "
+                                    f"{PAGE_SEARCH_TIER_TIMEOUT_SECONDS}s"
+                                ),
+                            )
+                        )
                         continue
                     except Exception as exc:
                         logger.warning(
@@ -534,29 +570,91 @@ class PageSearchService:
                             type(exc).__name__,
                             exc,
                         )
+                        attempted.append(
+                            TierAttempt(
+                                tier=tier.name,
+                                outcome="failed",
+                                detail=f"{type(exc).__name__}: {exc}"[:200],
+                            )
+                        )
                         continue
                     results, results_url = self._normalize_tier_outcome(outcome)
                     if results:
+                        attempted.append(
+                            TierAttempt(
+                                tier=tier.name,
+                                outcome="ok",
+                                detail=f"{len(results)} result(s)",
+                            )
+                        )
                         return self._respond(
                             mode=tier.name,
+                            status="ok",
+                            next_action="none",
+                            detail=(
+                                f"{tier.name} site search returned "
+                                f"{len(results)} result(s)"
+                            ),
                             attempted=attempted,
                             source_url=request.url,
                             results_url=results_url,
                             results=results,
                         )
+                    attempted.append(
+                        TierAttempt(
+                            tier=tier.name,
+                            outcome="empty",
+                            detail=(
+                                "site search facility answered with no results "
+                                "for this query"
+                            ),
+                        )
+                    )
 
                 text_tier = self._tiers[-1]
-                attempted.append("text")
                 hit = text_tier.detect(source_html, request.url)
                 text_results, text_results_url = self._normalize_tier_outcome(
                     await text_tier.execute(hit, request.query)
                 )
+                if text_results:
+                    attempted.append(
+                        TierAttempt(
+                            tier="text",
+                            outcome="ok",
+                            detail=f"{len(text_results)} passage(s) matched",
+                        )
+                    )
+                    return self._respond(
+                        mode="text",
+                        status="ok",
+                        next_action="none",
+                        detail=(
+                            f"no site search facility produced results; "
+                            f"{len(text_results)} passage(s) of page text matched"
+                        ),
+                        attempted=attempted,
+                        source_url=request.url,
+                        results_url=text_results_url,
+                        results=text_results,
+                    )
+
+                attempted.append(
+                    TierAttempt(
+                        tier="text",
+                        outcome="empty",
+                        detail="page text contains no passage matching the query",
+                    )
+                )
+                status, next_action, detail = _empty_verdict(attempted)
                 return self._respond(
                     mode="text",
+                    status=status,
+                    next_action=next_action,
+                    detail=detail,
                     attempted=attempted,
                     source_url=request.url,
                     results_url=text_results_url,
-                    results=text_results,
+                    results=[],
                 )
         except TimeoutError as exc:
             raise TimeoutExceededError(
@@ -578,12 +676,18 @@ class PageSearchService:
         self,
         *,
         mode: str,
-        attempted: list[str],
+        status: ToolStatus,
+        next_action: NextAction,
+        detail: str,
+        attempted: list[TierAttempt],
         source_url: str,
         results_url: str | None,
         results: list[PageSearchResult],
     ) -> PageSearchResponse:
         response = PageSearchResponse(
+            status=status,
+            next_action=next_action,
+            detail=detail,
             mode=mode,
             attempted=attempted,
             source_url=source_url,
@@ -592,6 +696,32 @@ class PageSearchService:
             truncated=False,
         )
         return _truncate_page_search_response(response)
+
+
+def _empty_verdict(attempted: list[TierAttempt]) -> tuple[ToolStatus, NextAction, str]:
+    """Explain an empty page_search, which has two very different causes.
+
+    A site whose search facility exists and broke is not a site that has
+    nothing on it, and the caller needs to know which one it just spent a call
+    on: one is worth retrying against the site directly, the other is only
+    worth retrying with a better query.
+    """
+    failed = [a.tier for a in attempted if a.outcome == "failed"]
+    if failed:
+        return (
+            "unavailable",
+            "fetch_directly",
+            f"site search facility failed ({', '.join(failed)}); page text "
+            "matched nothing. Fetch the site's own pages instead of searching it.",
+        )
+    checked = ", ".join(a.tier for a in attempted if a.outcome == "unavailable")
+    return (
+        "no_results",
+        "refine_query",
+        f"site exposes no working search facility (checked: {checked or 'none'}) "
+        "and its page text has no passage matching this query. Use fewer, "
+        "plainer words, or search the wider web instead.",
+    )
 
 
 def _truncate_page_search_response(response: PageSearchResponse) -> PageSearchResponse:

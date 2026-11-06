@@ -72,6 +72,11 @@ class BrowserManager:
         await self._cleanup_stale_profiles()
         await self._ensure_browser()
 
+    @property
+    def is_ready(self) -> bool:
+        """Whether a browser is up and connected, for the `providers` report."""
+        return self._browser is not None and self._browser.is_connected()
+
     async def new_context(self) -> BrowserContext:
         browser = await self._ensure_browser()
         return await browser.new_context(**self._context_options())

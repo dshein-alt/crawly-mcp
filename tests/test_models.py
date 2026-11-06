@@ -10,6 +10,7 @@ from crawly_mcp.models import (
     PageSearchResponse,
     PageSearchResult,
     SearchRequest,
+    TierAttempt,
 )
 from crawly_mcp.version import get_package_version
 
@@ -31,11 +32,16 @@ def test_search_request_schema_advertises_provider_enum() -> None:
     )
 
 
-def test_search_request_defaults_provider_and_trims_context() -> None:
-    request = SearchRequest(provider=None, context="  test query  ")
+def test_search_request_defaults_to_no_provider_preference() -> None:
+    """An omitted provider means "use the operator's priority order".
 
-    assert request.provider == "duckduckgo"
-    assert request.context == "test query"
+    Defaulting to a named provider made every caller request duckduckgo, so an
+    operator who excluded it broke the default call path with an input error.
+    """
+    for value in (None, "", "auto", " AUTO "):
+        request = SearchRequest(provider=value, context="  test query  ")
+        assert request.provider is None, value
+        assert request.context == "test query"
 
 
 def test_search_request_rejects_unknown_provider() -> None:
@@ -124,8 +130,11 @@ def test_page_search_request_requires_non_empty_url() -> None:
 
 def test_page_search_response_defaults() -> None:
     response = PageSearchResponse(
+        status="no_results",
+        next_action="refine_query",
+        detail="nothing matched",
         mode="text",
-        attempted=["text"],
+        attempted=[TierAttempt(tier="text", outcome="empty", detail="no match")],
         source_url="https://example.com",
         results_url=None,
         results=[],
@@ -134,6 +143,8 @@ def test_page_search_response_defaults() -> None:
     assert response.mode == "text"
     assert response.results == []
     assert response.truncated is False
+    assert response.status == "no_results"
+    assert response.attempted[0].outcome == "empty"
 
 
 def test_page_search_result_allows_missing_url_and_title() -> None:

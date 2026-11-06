@@ -4,10 +4,15 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
+from bs4 import BeautifulSoup
 from patchright.async_api import Error as PlaywrightError
 
 from crawly_mcp.errors import InvalidInputError, NavigationFailedError, URLSafetyError
-from crawly_mcp.models import PageSearchResponse, PageSearchResult
+from crawly_mcp.models import (
+    PageSearchResponse,
+    PageSearchResult,
+    TierAttempt,
+)
 from crawly_mcp.page_search import (
     AlgoliaHit,
     AlgoliaTier,
@@ -21,6 +26,7 @@ from crawly_mcp.page_search import (
     TextHit,
     TextTier,
     TierExecutionResult,
+    _linked_results_from_search_html,
     _truncate_page_search_response,
 )
 from crawly_mcp.parsing import SearchFormHit
@@ -581,7 +587,7 @@ async def test_cascade_first_tier_wins(_noop_ssrf_guard: None) -> None:
     response = await service.search(url="https://example.com/", query="q")
 
     assert response.mode == "algolia"
-    assert response.attempted == ["algolia"]
+    assert _tiers(response) == [("algolia", "ok")]
     assert len(response.results) == 1
     assert opensearch.execute_calls == 0
 
@@ -597,7 +603,7 @@ async def test_cascade_skips_non_detected_tiers(_noop_ssrf_guard: None) -> None:
     response = await service.search(url="https://example.com/", query="q")
 
     assert response.mode == "form"
-    assert response.attempted == ["form"]
+    assert _tiers(response) == [("algolia", "unavailable"), ("form", "ok")]
 
 
 @pytest.mark.asyncio
@@ -634,7 +640,7 @@ async def test_cascade_continues_past_raising_tier(_noop_ssrf_guard: None) -> No
     response = await service.search(url="https://example.com/", query="q")
 
     assert response.mode == "text"
-    assert response.attempted == ["algolia", "text"]
+    assert _tiers(response) == [("algolia", "failed"), ("text", "ok")]
 
 
 @pytest.mark.asyncio
@@ -648,7 +654,7 @@ async def test_cascade_zero_results_from_text_still_valid(
     response = await service.search(url="https://example.com/", query="q")
 
     assert response.mode == "text"
-    assert response.attempted == ["text"]
+    assert _tiers(response) == [("text", "empty")]
     assert response.results == []
 
 
@@ -675,7 +681,10 @@ async def test_search_ssrf_rejects_private_url() -> None:
 def _response_with(n_snippets: int, snippet: str) -> PageSearchResponse:
     return PageSearchResponse(
         mode="text",
-        attempted=["text"],
+        status="no_results",
+        next_action="refine_query",
+        detail="nothing found",
+        attempted=[TierAttempt(tier="text", outcome="empty", detail="no match")],
         source_url="https://example.com/",
         results_url=None,
         results=[PageSearchResult(snippet=snippet) for _ in range(n_snippets)],
@@ -709,3 +718,47 @@ def test_truncate_returns_skeleton_even_if_still_over_limit(
     out = _truncate_page_search_response(response)
     assert out.truncated is True
     assert out.results == []
+
+
+def _tiers(response) -> list:
+    """(tier, outcome) pairs, so cascade assertions stay readable."""
+    return [(attempt.tier, attempt.outcome) for attempt in response.attempted]
+
+
+def test_site_search_page_without_a_results_container_yields_nothing() -> None:
+    """A client-side search page renders no server-side results.
+
+    Harvesting the whole page in that case reported the navigation bar as the
+    top five hits, so the caller received five real-looking URLs that the site
+    never ranked.
+    """
+    html = (
+        "<html><body>"
+        '<nav><a href="/docs/intro">Docs</a>'
+        '<a href="/api/class-playwright">API</a></nav>'
+        "<main>"
+        '<div id="search-results"></div>'
+        '<a href="/search">Search</a>'
+        "</main></body></html>"
+    )
+    results = _linked_results_from_search_html(
+        BeautifulSoup(html, "html.parser"),
+        base_url="https://playwright.dev/python/search?q=install",
+    )
+    assert results == []
+
+
+def test_site_search_results_are_harvested_from_the_results_container() -> None:
+    html = (
+        "<html><body>"
+        '<nav><a href="/intro">Docs</a></nav>'
+        '<div id="search-results"><ul><li>'
+        '<a href="/docs/library#install">Installing libraries</a>'
+        "<p>How to install chromium with the CLI.</p>"
+        "</li></ul></div></body></html>"
+    )
+    results = _linked_results_from_search_html(
+        BeautifulSoup(html, "html.parser"),
+        base_url="https://example.com/search?q=install",
+    )
+    assert [r.url for r in results] == ["https://example.com/docs/library#install"]

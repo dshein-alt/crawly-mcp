@@ -200,9 +200,8 @@ CRAWLY_SEARCH_PROVIDER_EXCLUDE_ENV_VAR = "CRAWLY_SEARCH_PROVIDER_EXCLUDE"
 # How many providers one search call may try. Set to 1 to disable cascading.
 CRAWLY_SEARCH_MAX_PROVIDERS_ENV_VAR = "CRAWLY_SEARCH_MAX_PROVIDERS"
 
-# Retained while service.py and the MCP surface still import them.
+# Retained until the MCP surface stops importing it.
 DEFAULT_PROVIDER: str = "duckduckgo"
-SEARCH_TOTAL_TIMEOUT_SECONDS: float = 20.0
 DEFAULT_SEARCH_PROVIDER_ORDER: tuple[SearchProvider, ...] = (
     "searxng",
     "duckduckgo",
