@@ -224,23 +224,32 @@ def _status_haystack(html: str, provider: str, url: str, title: str, query: str)
     page with three real results becomes a zero-hit page or a consent wall —
     which also stops a cascade that should have continued.
 
-    So result containers (the provider quoting other sites) and form fields
-    (the search box quoting the caller) come out, the URL is stripped to its
-    path, and the query phrase itself is deleted from what remains.
+    So result containers (the provider quoting other sites) and the echo
+    positions — the search box, and the <title> node that get_text() would
+    otherwise fold into the body — come out, the URL is stripped to its path,
+    and the query phrase is deleted from the title, which is where providers
+    quote it back.
     """
     soup = BeautifulSoup(html, "html.parser")
     for node in soup.select(", ".join(RESULT_CONTAINERS[provider])):
         node.decompose()
-    for node in soup(["form", "input", "textarea", "script", "style", "noscript"]):
+    for node in soup(
+        ["form", "input", "textarea", "script", "style", "noscript", "title"]
+    ):
         node.decompose()
     path = urlsplit(url)._replace(query="", fragment="").geturl()
-    joined = " ".join((path, title, soup.get_text(" ", strip=True)[:4000])).lower()
-    return _strip_query_text(joined, query)
+    # The caller's words are removed where the provider quotes them back — the
+    # address, the title, the search box — and left alone in the body. Stripping
+    # the body too deletes the provider's own statement: searching "results"
+    # removes that word from "No results for results", and the zero-hit page is
+    # then read as a results page full of unrelated links.
+    body = soup.get_text(" ", strip=True)[:4000]
+    return " ".join((path, _strip_query_text(title, query), body)).lower()
 
 
-def _strip_query_text(haystack: str, query: str) -> str:
-    """Delete the caller's phrase, plain and URL-encoded, from the haystack."""
-    cleaned = haystack
+def _strip_query_text(text: str, query: str) -> str:
+    """Delete the caller's phrase, plain and URL-encoded, from one echo position."""
+    cleaned = text
     phrase = query.strip().lower()
     if not phrase:
         return cleaned

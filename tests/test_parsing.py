@@ -500,3 +500,39 @@ def test_a_page_about_a_wall_topic_is_not_reported_as_a_wall() -> None:
     )
     assert evidence.kind == "results"
     assert evidence.result_anchors == 1
+
+
+def test_a_query_that_names_the_providers_own_words_still_reads_as_empty() -> None:
+    """The provider's statement survives the removal of the caller's echo.
+
+    Stripping the query from the whole page deleted "results" from DuckDuckGo's
+    own "No results for results", and the zero-hit page came back as a results
+    page carrying Microsoft and Google Translate — the exact fabrication this
+    classifier exists to stop.
+    """
+    for query in ("results", "no results"):
+        evidence = classify_search_page(
+            "duckduckgo",
+            f"https://duckduckgo.com/?q={query.replace(' ', '+')}&ia=web",
+            f"{query} at DuckDuckGo",
+            _fixture("duckduckgo_zero_results.html"),
+            query=query,
+        )
+        assert evidence.kind == "zero_results", f"query={query!r} -> {evidence.kind}"
+
+
+def test_the_echo_is_removed_from_the_title_not_from_the_prose() -> None:
+    """Title echo goes, provider prose stays, in the same page."""
+    html = """
+    <html><head><title>no results at DuckDuckGo</title></head><body>
+      <p>No results found. Try checking your spelling.</p>
+    </body></html>
+    """
+    evidence = classify_search_page(
+        "duckduckgo",
+        "https://duckduckgo.com/?q=no+results&ia=web",
+        "no results at DuckDuckGo",
+        html,
+        query="no results",
+    )
+    assert evidence.kind == "zero_results"
