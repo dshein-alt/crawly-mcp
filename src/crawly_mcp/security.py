@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import os
 import socket
 from dataclasses import dataclass
 from typing import TypeAlias
@@ -10,12 +11,28 @@ from urllib.parse import urlsplit
 from loguru import logger
 from patchright.async_api import BrowserContext, Page, Route
 
+from crawly_mcp.constants import CRAWLY_SSRF_ALLOW_ENV_VAR
 from crawly_mcp.errors import URLSafetyError
 
 SAFE_NETWORK_SCHEMES = {"http", "https"}
 SAFE_LOCAL_SCHEMES = {"about", "blob", "data"}
 BLOCKED_HOSTNAMES = {"localhost", "localhost.localdomain"}
 IPAddress: TypeAlias = ipaddress.IPv4Address | ipaddress.IPv6Address
+
+
+def allowed_private_hosts() -> frozenset[str]:
+    """Hostnames the operator declared reachable, from CRAWLY_SSRF_ALLOW.
+
+    Private-network deployments need to fetch internal hosts (a wiki, a
+    search instance, a fixture site) that are by definition not global
+    addresses. The allowlist is exact hostnames only — no CIDRs, no wildcards
+    — because every entry is a hole in the guard, and a hole you can name is a
+    hole you can audit.
+    """
+    raw = os.environ.get(CRAWLY_SSRF_ALLOW_ENV_VAR, "")
+    return frozenset(
+        host.strip().rstrip(".").lower() for host in raw.split(",") if host.strip()
+    )
 
 
 @dataclass(slots=True)
@@ -92,6 +109,15 @@ class URLSafetyGuard:
         host = parsed.hostname.rstrip(".").lower()
         if host in BLOCKED_HOSTNAMES:
             raise URLSafetyError("blocked_target", f"hostname {host!r} is not allowed")
+
+        if host in allowed_private_hosts():
+            logger.warning(
+                "ssrf allowlist hit host={!r} via {}; non-public addresses for "
+                "this host are not checked",
+                host,
+                CRAWLY_SSRF_ALLOW_ENV_VAR,
+            )
+            return
 
         try:
             literal_ip = ipaddress.ip_address(host)

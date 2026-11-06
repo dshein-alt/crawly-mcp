@@ -111,3 +111,66 @@ def test_close_event_cleans_up_dict_entry() -> None:
     # Fire the close handler without anyone calling pop_blocked_error:
     close_handlers[0]()
     assert page not in guard._blocked_requests
+
+
+@pytest.mark.asyncio
+async def test_allowlist_lets_a_named_private_host_through(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Private-network deployments name the hosts they mean to reach."""
+    monkeypatch.setenv("CRAWLY_SSRF_ALLOW", "fixture-site, internal.wiki")
+    guard = URLSafetyGuard()
+
+    async def fake_resolve(host: str, port: int | None):
+        return (ipaddress.ip_address("10.0.0.5"),)
+
+    monkeypatch.setattr(guard, "_resolve_host", fake_resolve)
+
+    await guard.validate_user_url("http://fixture-site/index.html")
+    await guard.validate_user_url("http://internal.wiki/")
+
+
+@pytest.mark.asyncio
+async def test_allowlist_does_not_widen_to_unnamed_hosts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CRAWLY_SSRF_ALLOW", "fixture-site")
+    guard = URLSafetyGuard()
+
+    async def fake_resolve(host: str, port: int | None):
+        return (ipaddress.ip_address("10.0.0.5"),)
+
+    monkeypatch.setattr(guard, "_resolve_host", fake_resolve)
+
+    with pytest.raises(URLSafetyError, match="non-public"):
+        await guard.validate_user_url("http://other-host/")
+
+
+@pytest.mark.asyncio
+async def test_allowlist_still_refuses_credentials_and_bad_schemes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An allowlisted host is not a general exemption."""
+    monkeypatch.setenv("CRAWLY_SSRF_ALLOW", "fixture-site")
+    guard = URLSafetyGuard()
+
+    with pytest.raises(URLSafetyError, match="embedded credentials"):
+        await guard.validate_user_url("http://user:pass@fixture-site/")
+    with pytest.raises(URLSafetyError, match="unsupported URL scheme"):
+        await guard.validate_user_url("file://fixture-site/etc/passwd")
+
+
+@pytest.mark.asyncio
+async def test_allowlist_is_empty_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("CRAWLY_SSRF_ALLOW", raising=False)
+    guard = URLSafetyGuard()
+
+    async def fake_resolve(host: str, port: int | None):
+        return (ipaddress.ip_address("10.0.0.5"),)
+
+    monkeypatch.setattr(guard, "_resolve_host", fake_resolve)
+
+    with pytest.raises(URLSafetyError, match="non-public"):
+        await guard.validate_user_url("http://fixture-site/")
