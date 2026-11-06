@@ -9,8 +9,9 @@ Use this when a small local LLM needs facts from multiple pages and raw fetch re
 
 For `crawly-mcp`, prefer the built-in bounded path first:
 
+- **read `status` and `next_action` before concluding anything.** `status="no_results"` means a provider searched and genuinely found nothing, so reword the query. `status="blocked"`, `"unavailable"`, `"timeout"`, or `"navigation_failed"` means providers could not answer: that is **not** evidence that the topic is empty, so call again with a `suggested_providers` entry, ask `providers` what is usable, or report the failure accurately. Never tell the user a search found nothing when the status says a provider failed.
+- `search` cascades providers on its own and reports `provider` (the winner) plus `attempted` (what each provider did). Do not re-run the same query unchanged.
 - call `page_search(url, query)` first when the task is really "find this within a known page or docs site"
-- call `search(...)` to collect candidate URLs
 - call `fetch(urls=[...], content_format="text")` instead of raw HTML
 - keep `urls` small, usually `1..3` per fetch for local models
 - answer in concise prose by default
@@ -44,7 +45,9 @@ For this repo and its Docker image:
 - Prefer `fetch(..., content_format="text")` over post-processing HTML yourself.
 - Use `content_format="html"` only when markup structure is the actual task.
 - Treat `pages[url]` as bounded source text, not as something to dump straight back into the next prompt.
-- If `page_search(...)` returns `mode="opensearch"` or `mode="form"`, keep `results_url` because it identifies the landed search page.
+- If `page_search(...)` returns `mode="opensearch"` or `mode="form"`, keep `results_url` because it identifies the landed search page. Its `attempted` entries say which tiers were `unavailable` (the site has no such facility), `failed` (it has one and it broke — fetch the site directly instead of concluding the topic is absent), or `empty`.
+- `fetch` handles each URL on its own: read `errors` for the URLs that did not return, each with its own reason and `next_action`. Partial success is normal, so `status="ok"` with some failures means you got what was gettable.
+- Ask `providers` before deciding a search failure is the query's fault; it reports what is usable, what is excluded by configuration, and how each provider last behaved.
 - Use tools silently; do not narrate tool calls or internal reasoning to the user.
 - Final answers should be prose by default. Include raw JSON only on request.
 
@@ -52,6 +55,7 @@ For this repo and its Docker image:
 
 | Step | Failure if skipped |
 |---|---|
+| Read `status` first | A provider failure gets reported as "the web has nothing on this" |
 | Bounded first step | Broad search wastes budget when one docs site could answer directly |
 | `content_format="text"` | Markup dominates tokens before reasoning starts |
 | Prose-first on small runs | Simple tasks become noisy tool dumps or unnecessary JSON |
@@ -62,6 +66,8 @@ For this repo and its Docker image:
 
 ## Common Mistakes
 
+- Reporting "no results found" when `status` says a provider was blocked, unavailable, or timed out
+- Re-running the same query unchanged after `search` already cascaded providers
 - Fetching raw HTML for article-style extraction
 - Using `search(...)` when a known page plus `page_search(...)` would answer faster
 - Sending all fetched pages into one prompt

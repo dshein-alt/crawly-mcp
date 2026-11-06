@@ -7,6 +7,7 @@ Self-contained recipe to run the opt-in `searxng` provider against a local SearX
 - `docker-compose.yml` — two services on a shared compose network: `searxng` and `crawly-mcp`.
 - `settings.yml` — minimal SearXNG configuration with JSON output enabled (`search.formats: [html, json]`) and the rate limiter disabled (`server.limiter: false`). Both are required for crawly's JSON-API client to reach the instance.
 - `.env.example` — template for the environment file that controls the image tag and host port bindings.
+- `docker-compose.test.yml` — overlay used by the behavioural test suite: builds crawly-mcp from this checkout, adds an nginx `fixture-site` serving deterministic pages, and adds `crawly-mcp-broken` pinned to an unreachable SearXNG so "nothing answered" is reproducible.
 
 ## Prerequisites
 
@@ -63,10 +64,27 @@ PY
 
 Expect a JSON object with up to 5 organic result URLs.
 
+## Run the behavioural suite
+
+The suite asserts the contract a caller sees over MCP — that an empty result is
+distinguishable from a provider that could not answer, that a refused URL costs
+that URL only, and that a site-search page yields the site's ranked links and
+not its navigation bar.
+
+```sh
+uv run python scripts/e2e_stack.py --live   # --live adds best-effort provider probes
+```
+
+It builds from this checkout, brings the stack up, runs the checks against both
+crawly endpoints, and tears the stack down again (`--keep` leaves it running for
+inspection). Live DuckDuckGo / Google probes are reported and never fail the
+suite, because they depend on what those providers are doing to your network.
+
 ## Tear down
 
 ```sh
-docker compose down
+docker compose down                                    # the example stack
+docker compose -f docker-compose.yml -f docker-compose.test.yml down -v   # the test stack
 ```
 
 ## Notes

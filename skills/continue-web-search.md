@@ -6,6 +6,8 @@ invokable: true
 
 When the task requires searching and synthesizing across multiple web pages with a small local model:
 
+- **Read `status` and `next_action` before concluding anything.** `no_results` means a provider searched and found nothing, so reword the query. `blocked` / `unavailable` / `timeout` / `navigation_failed` means providers could not answer — that is not evidence that the topic is empty, so retry with a `suggested_providers` entry, ask `providers` what is usable, or report the failure accurately.
+- `search(...)` cascades providers on its own and reports `provider` plus `attempted`; do not re-run the same query unchanged.
 - If you already have a likely docs URL or landing page, try `page_search(url, query)` before starting another broad `search(...)`.
 - Use `search(...)` to collect candidate URLs.
 - Keep URL batches small. Default to `1..3` URLs per fetch call.
@@ -29,7 +31,8 @@ Notes:
 
 - `page_search(...)` is the bounded path for single-page and site-search style follow-ups.
 - Preserve `results_url` from `page_search(...)` when present; it is useful for opensearch/form-backed site search results.
-- If a tool fails, state that briefly and accurately; do not invent a timeout or fallback result.
+- If a tool fails, state that briefly and accurately; do not invent a timeout or fallback result, and do not report "nothing found" for a status that names a provider failure.
+- `fetch` reports per-URL `errors` with their own reasons; partial success is normal, so read `errors` rather than assuming the call failed.
 
 Avoid:
 

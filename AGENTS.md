@@ -36,6 +36,11 @@ uv run crawly-mcp
 CRAWLY_HOST=0.0.0.0 CRAWLY_PORT=8000 uv run crawly-mcp --transport streamable-http
 uv run pytest
 uv run ruff check .
+
+# Behavioural suite against a local SearXNG + fixture-site stack (docker compose)
+uv run python scripts/e2e_stack.py --live   # --keep leaves the stack running
+uv run python scripts/http_mcp_smoke.py --url http://127.0.0.1:10000/mcp \
+  --private-url http://172.17.0.1:12345
 ```
 
 ## Layout
@@ -64,8 +69,11 @@ uv run ruff check .
 - **Timeouts.** `search`: 15s per page, 20s total. `fetch`: 15s per URL, 35s total. JS-challenge settle: 10s.
 - **SSRF.** http/https only, no embedded credentials; block loopback, link-local, private, multicast, reserved, and unspecified IPs. DNS is resolved before navigation and re-validated on browser subrequests via route interception.
 - **Challenge handling.** Normal in-browser JS execution with bounded wait for interstitial → target transition. Uses patchright's fingerprint patches, per-provider persistent profiles, client-hint headers, and a homepage warm-up hop to blend with normal traffic. No CAPTCHA solving and no proxy rotation.
-- **Search.** Two code paths share a single dispatcher in `WebSearchService.search()`. The default `duckduckgo` provider (and `google` / `yandex`) goes through the browser path: real Playwright navigation, per-provider persistent profiles, challenge handling, BeautifulSoup parsing. The opt-in `searxng` provider hits one SearXNG instance via JSON API over `httpx` (no browser); the instance URL **must** be supplied via `CRAWLY_SEARXNG_URL` or the call returns `invalid_input`. There is no instance registry, no automatic cross-provider fallback, and no public-instance support — public SearXNG operators actively block automated clients, so the provider is intended for self-hosted instances with JSON output enabled.
-- **Fetch.** Partial success is normal: `pages` maps URL → HTML, `errors` maps URL → structured error, `truncated` lists URLs whose HTML exceeded the 1 MiB per-URL cap.
+- **Outcomes.** Every tool result carries `status`, `next_action`, `detail` first (see `ToolOutcome` in [models.py](src/crawly_mcp/models.py)). The vocabulary lives in [constants.py](src/crawly_mcp/constants.py) as `ToolStatus` / `NextAction` / `PageKind`, and the error-type → status mapping in [errors.py](src/crawly_mcp/errors.py) as `STATUS_BY_TYPE` / `NEXT_ACTION_BY_TYPE`. Recoverable outcomes are returned as results; MCP protocol errors are reserved for malformed arguments. `no_results` means the source answered and had nothing; `blocked` / `unavailable` / `timeout` / `navigation_failed` mean the source could not answer, and the two must never be conflated.
+- **Search.** `WebSearchService.search()` cascades providers: it walks the configured priority order until one answers, recording one `ProviderAttempt` per provider tried. The browser path (`duckduckgo` / `google` / `yandex`) does real Playwright navigation, per-provider persistent profiles, warm-up, and classifies the landed page with `classify_search_page()` in [parsing.py](src/crawly_mcp/parsing.py) before extracting anything; `searxng` hits one instance via JSON API over `httpx` (no browser) and needs `CRAWLY_SEARXNG_URL`. Cascade on `blocked` / `unavailable` / `timeout` / `navigation_failed`; stop on `no_results`. Providers that fail repeatedly are skipped as fill slots. There is no public-instance registry: public SearXNG operators actively block automated clients.
+- **Anti-fabrication.** Result URLs come only from anchors inside `RESULT_CONTAINERS`, and a page carrying a `SEARCH_ZERO_RESULT_MARKERS` phrase is `zero_results` whatever its DOM contains. DuckDuckGo's zero-hit page ships article-wrapped links to popular sites, so trusting anchors over the provider's own statement returns five plausible, unrelated URLs. An interstitial that never reached a results view is `shell` → `unavailable`, not empty.
+- **Fetch.** Partial success is normal and per-URL: safety refusals, DNS failures, timeouts, and challenge walls land in that URL's `errors` entry with its own `next_action`, and the other URLs still return. `pages` maps URL → content, `truncated` lists URLs over the 1 MiB per-URL cap. Only a browser that will not start is raised as an error.
+- **Provider configuration.** `CRAWLY_SEARCH_PROVIDER_ORDER` sets priority, `CRAWLY_SEARCH_PROVIDER_EXCLUDE` removes providers from the service (never tried, even on request; exclusion wins over ordering), `CRAWLY_SEARCH_MAX_PROVIDERS` caps providers per call (`1` disables cascading). `search`'s `provider` parameter defaults to `auto`, meaning "use the configured order" — an omitted provider is not a request for DuckDuckGo. Health is in-process only: caching a "this provider is broken" verdict across restarts would turn a transient wall into a permanent skip.
 - **Container interface.** HTTP MCP via `streamable-http` is the primary container interface. The endpoint is unauthenticated in v1 and should sit behind localhost, private networking, or an auth/TLS proxy.
 
 ## Working With This Repo

@@ -17,11 +17,48 @@ This project is licensed under the [MIT License](LICENSE).
 
 ## Tools
 
-- `search(provider, context)` runs a browser-backed search on `duckduckgo` (default), `google`, or `yandex` and returns up to 5 organic result URLs. The opt-in `searxng` provider routes the query through a JSON-API call to a SearXNG instance you supply via `CRAWLY_SEARXNG_URL`; see below.
-- `fetch(urls, content_format)` fetches `1..5` URLs and returns browser-rendered page content with per-URL `pages`, `errors`, and `truncated` fields. Use `content_format="html"` for raw HTML or `content_format="text"` for extracted readable text.
-- `page_search(url, query)` searches for content on a single page. Tries known site-search facilities first (Algolia DocSearch, OpenSearch descriptor, Readthedocs API), then generic GET form detection, then find-in-page text as a fallback. Returns a `mode` discriminator plus up to 5 results with snippets and optional result URLs.
+Every tool result carries `status`, `next_action`, and `detail` first, so a caller can tell "the web has nothing on this" apart from "this provider could not answer" without a human having to say "try google".
+
+| `status` | what it means | `next_action` says |
+|---|---|---|
+| `ok` | usable data returned | `none` |
+| `no_results` | the source answered and genuinely had nothing | `refine_query` — change the query |
+| `blocked` | CAPTCHA, consent wall, bot page | `try_other_provider` / `report_to_user` |
+| `unavailable` | not configured, unreachable, interstitial, or the page shape is no longer parseable | `try_other_provider` / `fetch_directly` |
+| `timeout` | the source did not answer in budget | `retry_later` |
+| `navigation_failed` | the request failed at the network layer | `retry_later` |
+| `unsafe_url` | the URL was refused by the safety guard | `report_to_user` |
+| `invalid_input` | the arguments are wrong | `report_to_user` — fix the arguments |
+
+An empty `urls` list with a status other than `no_results` is a tool failure, never an empty web.
+
+- `search(provider, context)` runs a browser-backed search and **cascades providers** in the configured priority order until one answers. `provider` defaults to `auto` (start from the configured order); naming one starts there and cascades from it. Returns `urls` plus `provider` (the winner), `attempted` (one entry per provider tried, with its status, page kind, and final URL), `available_providers`, and `suggested_providers`.
+- `fetch(urls, content_format)` fetches `1..5` URLs. **Each URL is handled on its own**: a refused, unsafe, unreachable, timed-out, or challenge-walled URL lands in `errors` with its own reason and `next_action`, and the other URLs still return. Partial success is normal, so `status` is `ok` whenever at least one URL returned content. `content_format="html"` returns raw HTML, `"text"` returns extracted readable text.
+- `page_search(url, query)` searches within a single page: known site-search facilities first (Algolia DocSearch, OpenSearch descriptor, Readthedocs API), then GET form detection, then find-in-page text. `attempted` reports one entry per tier as `ok`, `empty`, `failed`, or `unavailable`, so a broken site-search is not reported as a site with nothing on it.
+- `providers()` reports which providers this deployment can use, which are excluded by configuration or missing settings, the cascade order, and how each provider last behaved in this process. Call it before blaming a search failure on the query.
 
 `context` is intentionally the search query string for caller compatibility.
+
+### What the cascade does, and does not, retry
+
+A provider is retried past when it is `blocked`, `unavailable`, `timeout`, or `navigation_failed`. A provider that reports `no_results` **stops** the cascade: an honest empty answer is an answer, and cascading on top of it turns "the topic is empty" into three more requests. Providers that fail repeatedly are skipped as fill slots in later calls, and the `providers` tool reports them as `skipped`.
+
+### Configuring provider priority and exclusion
+
+Operators own the provider set; callers only ever see what survives it.
+
+```sh
+# Prefer a self-hosted SearXNG, then DuckDuckGo; never touch Google or Yandex.
+export CRAWLY_SEARCH_PROVIDER_ORDER="searxng,duckduckgo"
+export CRAWLY_SEARCH_PROVIDER_EXCLUDE="google,yandex"
+
+# One provider per call: no cascading, lowest latency, cheapest bill.
+export CRAWLY_SEARCH_MAX_PROVIDERS=1
+```
+
+- A provider missing from `CRAWLY_SEARCH_PROVIDER_ORDER` is not used.
+- A provider in `CRAWLY_SEARCH_PROVIDER_EXCLUDE` is never used, even when a caller names it — that call is refused as `invalid_input` saying it was excluded, and `providers()` lists it with `excluded: true` and the reason.
+- `providers()` reports the resulting `cascade_order`, so the setting can be verified without guessing.
 
 ## Setup
 
@@ -42,21 +79,23 @@ To force Playwright-managed Chromium instead of a host browser:
 PLAYWRIGHT_BROWSER_SOURCE=bundled
 ```
 
-## SearXNG (opt-in)
+## SearXNG
 
-The `searxng` provider is **opt-in**. To use it, both conditions must hold:
+The `searxng` provider routes the query through a JSON-API call to a SearXNG instance you supply, and it is the only provider here that is not fighting a bot wall — so when configured, it leads the cascade order.
 
-1. Pass `provider="searxng"` to the `search` MCP tool (or `--provider searxng` on the CLI). It is not the default.
-2. Set `CRAWLY_SEARXNG_URL` to the URL of a SearXNG instance whose JSON output is enabled (`search.formats: [..., json]` in its `settings.yml`).
+To use it:
 
-Without `CRAWLY_SEARXNG_URL`, the provider returns an `invalid_input` error.
+1. Set `CRAWLY_SEARXNG_URL` to the URL of a SearXNG instance whose JSON output is enabled (`search.formats: [..., json]` in its `settings.yml`).
+2. Ask for it by name (`provider="searxng"`, `--provider searxng`) or leave `provider="auto"` and let the cascade reach it.
+
+Without `CRAWLY_SEARXNG_URL` the provider is reported unavailable and is left out of the cascade; asking for it by name is refused as `invalid_input`.
 
 ```sh
 CRAWLY_SEARXNG_URL=http://127.0.0.1:8080/ \
   uv run crawly-cli search --provider searxng --context "..."
 ```
 
-There is no instance registry and no automatic cross-provider fallback — failures from your SearXNG instance surface directly to the caller. This is deliberate: pinning is an explicit choice and crawly respects it.
+There is no instance registry: public instances on https://searx.space generally return 429 / redirects / empty results to non-browser clients, so this provider is for self-hosted or privately-known instances. When a SearXNG instance refuses, the cascade moves on to the next provider in the order and reports the instance's outcome in `attempted`.
 
 ### Run alongside a local SearXNG (compose example)
 
@@ -83,11 +122,13 @@ Run the CLI directly:
 
 ```sh
 uv run crawly-cli search --context "python async playwright"
-uv run crawly-cli fetch https://example.com
+uv run crawly-cli search --provider google --context "python"
+uv run crawly-cli fetch https://example.com --content-format text
 uv run crawly-cli page-search --url https://docs.example.com/guide --query "authentication"
+uv run crawly-cli providers
 ```
 
-The `page-search` subcommand prints a JSON `PageSearchResponse` with `mode`, `attempted`, `results_url`, and `results[]`.
+Each subcommand prints its response envelope as JSON: `search` prints `status`, `next_action`, `detail`, `urls`, `provider`, `attempted[]`, `available_providers`, `suggested_providers`; `page-search` prints `status`, `mode`, `attempted[]` (per tier), `results_url`, and `results[]`.
 
 Run the MCP server over stdio:
 
@@ -262,6 +303,10 @@ crawly uses [patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright) (a 
 | `CRAWLY_PROFILE_CLEANUP_ON_START` | `false` | Enable age-based profile cleanup at startup. Set to `true` in the Dockerfile entrypoint. **Unsafe when multiple processes share the profile dir.** |
 | `CRAWLY_PROFILE_MAX_AGE_DAYS` | `14` | Age threshold for profile cleanup. |
 | `CRAWLY_SEARCH_JITTER_MS` | `500,1500` | Min/max ms delay between warm-up and real query. Two-int CSV. |
+| `CRAWLY_SEARCH_PROVIDER_ORDER` | `searxng,duckduckgo,google,yandex` | Provider **priority order**. The cascade walks it in this sequence; an explicitly requested provider is still tried first. Unknown names are ignored with a warning. |
+| `CRAWLY_SEARCH_PROVIDER_EXCLUDE` | unset | Providers to **exclude entirely**. An excluded provider is never tried, even when requested by name (that is refused as `invalid_input`), and is reported `excluded` by `providers()`. Exclusion wins over ordering. CSV. |
+| `CRAWLY_SEARCH_MAX_PROVIDERS` | `3` | How many providers one `search` call may try. Set `1` to disable cascading. Invalid or non-positive values fall back to the default. |
+| `CRAWLY_SSRF_ALLOW` | unset | Exact hostnames (CSV) allowed to resolve to non-public addresses, for private-network deployments that must reach an internal wiki, search instance, or fixture site. No CIDRs, no wildcards — every entry is a hole in the guard, so name them. Scheme and credential checks still apply. |
 | `CRAWLY_TRACE_DIR` | unset | Opt-in per-search artifact dump directory. When set, each `search()` writes `meta.json`, `fingerprint.json`, `network.jsonl`, `page.html`, and `screenshot.png`. |
 
 ### Profile persistence
