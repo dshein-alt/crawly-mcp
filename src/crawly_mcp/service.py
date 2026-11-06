@@ -20,7 +20,7 @@ from patchright.async_api import (
 )
 from pydantic import ValidationError
 
-from crawly_mcp.browser import BrowserManager
+from crawly_mcp.browser import BrowserManager, SearchContextHandle
 from crawly_mcp.challenge import resolve_fetch_content
 from crawly_mcp.constants import (
     ALLOWED_PROVIDERS,
@@ -593,12 +593,7 @@ class WebSearchService:
         search_url = build_search_url(provider, context)
         await guard_upfront.validate_user_url(search_url)
 
-        try:
-            async with asyncio.timeout(SEARCH_CONTEXT_ACQUIRE_TIMEOUT_SECONDS):
-                handle = await self._browser_manager.search_context(provider)
-                page = await handle.context.new_page()
-        except TimeoutError as exc:
-            raise TimeoutExceededError("search context acquisition timed out") from exc
+        handle, page = await self._acquire_search_page(provider)
 
         trace_html: str | None = None
         try:
@@ -637,6 +632,28 @@ class WebSearchService:
             # Persistent contexts stay cached for cookie continuity; ephemeral
             # ones (CRAWLY_USE_PERSISTENT_PROFILES=false) must be closed here.
             if handle.should_close_context:
+                with suppress(Exception):
+                    await handle.context.close()
+
+    async def _acquire_search_page(
+        self, provider: SearchProvider
+    ) -> tuple[SearchContextHandle, Any]:
+        handle: SearchContextHandle | None = None
+        page = None
+        try:
+            async with asyncio.timeout(SEARCH_CONTEXT_ACQUIRE_TIMEOUT_SECONDS):
+                handle = await self._browser_manager.search_context(provider)
+                page = await handle.context.new_page()
+        except (TimeoutError, PlaywrightTimeoutError) as exc:
+            raise TimeoutExceededError("search context acquisition timed out") from exc
+        except PlaywrightError as exc:
+            raise NavigationFailedError(
+                f"search context acquisition failed: {exc}"
+            ) from exc
+        else:
+            return handle, page
+        finally:
+            if page is None and handle is not None and handle.should_close_context:
                 with suppress(Exception):
                     await handle.context.close()
 

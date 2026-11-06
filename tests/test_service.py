@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 from patchright.async_api import (
@@ -778,3 +779,51 @@ def test_the_same_wall_advises_differently_per_tool() -> None:
     assert next_action_for("challenge_blocked", tool="fetch") == "retry_later"
     assert next_action_for("timeout", tool="fetch") == "retry_later"
     assert next_action_for("invalid_url", tool="fetch") == "report_to_user"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["context", "page"])
+@pytest.mark.parametrize(
+    ("error", "status"),
+    [
+        (PlaywrightError("Target closed"), "navigation_failed"),
+        (PlaywrightTimeoutError("Context timed out"), "timeout"),
+    ],
+)
+async def test_browser_acquisition_failure_cascades(
+    monkeypatch: pytest.MonkeyPatch, stage: str, error: Exception, status: str
+) -> None:
+    monkeypatch.setenv("CRAWLY_SEARCH_PROVIDER_ORDER", "duckduckgo,google")
+    monkeypatch.setattr(URLSafetyGuard, "validate_user_url", AsyncMock())
+    manager = FakeBrowserManager(
+        {
+            "https://www.google.com/search?q=python&hl=en": {
+                "html": GOOGLE_RESULT_HTML,
+                "title": "python - Google Search",
+            }
+        }
+    )
+    working = await manager.search_context("google")
+    failed_context = FakeContext({})
+    failed_context.new_page = AsyncMock(side_effect=error)
+    failed_context.close = AsyncMock()
+    first = (
+        error
+        if stage == "context"
+        else SearchContextHandle(
+            context=failed_context,
+            guard=working.guard,
+            first_use=False,
+            should_close_context=True,
+        )
+    )
+    manager.search_context = AsyncMock(side_effect=[first, working])
+
+    response = await WebSearchService(manager).search(context="python")
+
+    assert response.status == "ok"
+    assert response.provider == "google"
+    assert response.attempted[0].status == status
+    assert manager.search_context.await_count == 2
+    if stage == "page":
+        failed_context.close.assert_awaited_once()
