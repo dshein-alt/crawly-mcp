@@ -591,6 +591,7 @@ class WebSearchService:
                 provider=provider,
                 search_url=search_url,
                 trace=trace,
+                query=context,
             )
             trace_html = None
             status: ToolStatus = "ok" if urls else "no_results"
@@ -630,6 +631,7 @@ class WebSearchService:
         provider: str,
         search_url: str,
         trace: SearchTrace | None,
+        query: str = "",
     ) -> tuple[list[str], SearchPageEvidence, str]:
         """Navigate one provider and say what the page actually was.
 
@@ -642,7 +644,7 @@ class WebSearchService:
 
         title = await page.title()
         html = await page.content()
-        evidence = classify_search_page(provider, page.url, title, html)
+        evidence = classify_search_page(provider, page.url, title, html, query=query)
         self._record_probe_trace(trace, page, title, evidence)
         logger.info(
             "search probe provider={} page_kind={} anchors={} opaque={} "

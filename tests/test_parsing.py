@@ -409,3 +409,94 @@ def test_build_snippets_prefers_an_exact_phrase_match() -> None:
     text = "The network idle option waits. Nothing else here about idle."
     snippets = build_snippets(text, "network idle", max_matches=2, context_chars=80)
     assert snippets[0].startswith("The network idle option")
+
+
+def test_query_echo_in_the_title_cannot_fake_a_zero_hit_page() -> None:
+    """The caller's own words are subtracted before markers run.
+
+    Searching "sqlite no results" puts that phrase in the page title, and a
+    marker matched against the whole page then reads a page with three real
+    results as a zero-hit page — which also stops a cascade that should have
+    continued.
+    """
+    evidence = classify_search_page(
+        "duckduckgo",
+        "https://duckduckgo.com/?q=sqlite+no+results&ia=web",
+        "sqlite no results at DuckDuckGo",
+        _fixture("duckduckgo_results.html"),
+        query="sqlite no results",
+    )
+    assert evidence.kind == "results"
+    assert evidence.result_anchors == 3
+
+
+def test_result_snippets_cannot_trigger_a_consent_wall() -> None:
+    """A page about cookie consent is content about consent, not a consent wall."""
+    html = """
+    <html><head><title>cookie consent at DuckDuckGo</title></head><body>
+      <article class="result">
+        <h2><a class="result__a" href="https://gdpr.example/cookie-consent">
+          Cookie consent guide</a></h2>
+        <p>How to implement cookie consent and manage the cookie consent banner.</p>
+      </article>
+    </body></html>
+    """
+    evidence = classify_search_page(
+        "duckduckgo",
+        "https://duckduckgo.com/?q=cookie+consent&ia=web",
+        "cookie consent at DuckDuckGo",
+        html,
+        query="cookie consent",
+    )
+    assert evidence.kind == "results"
+    assert evidence.result_anchors == 1
+
+
+def test_genuine_zero_hit_page_stays_zero_results_when_the_query_echoes() -> None:
+    """Removing the echo must not remove the provider's own statement."""
+    evidence = classify_search_page(
+        "duckduckgo",
+        "https://duckduckgo.com/?q=zzqxvplm+qkfwjzb&ia=web",
+        "zzqxvplm qkfwjzb at DuckDuckGo",
+        _fixture("duckduckgo_zero_results.html"),
+        query="zzqxvplm qkfwjzb",
+    )
+    assert evidence.kind == "zero_results"
+
+
+def test_a_real_wall_stays_a_wall_when_the_query_names_one() -> None:
+    evidence = classify_search_page(
+        "google",
+        "https://www.google.com/sorry/index",
+        "Unusual traffic from your computer network",
+        _fixture("google_sorry.html"),
+        query="unusual traffic",
+    )
+    assert evidence.kind == "captcha"
+
+
+def test_a_page_about_a_wall_topic_is_not_reported_as_a_wall() -> None:
+    """Result text about "automated requests" is content, not a bot refusal.
+
+    "automated requests" is a DuckDuckGo CAPTCHA marker, and it is also the
+    subject of the page's own results; matching markers against result snippets
+    turned a healthy results page into a refusal.
+    """
+    html = """
+    <html><head><title>automated requests at DuckDuckGo</title></head><body>
+      <article class="result">
+        <h2><a class="result__a" href="https://api.example/rate-limits">
+          Rate limiting automated requests</a></h2>
+        <p>How to throttle automated requests from your API client.</p>
+      </article>
+    </body></html>
+    """
+    evidence = classify_search_page(
+        "duckduckgo",
+        "https://duckduckgo.com/?q=automated+requests&ia=web",
+        "automated requests at DuckDuckGo",
+        html,
+        query="automated requests",
+    )
+    assert evidence.kind == "results"
+    assert evidence.result_anchors == 1

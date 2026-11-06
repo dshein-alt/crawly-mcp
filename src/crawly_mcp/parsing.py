@@ -177,7 +177,12 @@ class SearchPageEvidence:
 
 
 def classify_search_page(
-    provider: str, url: str, title: str, html: str
+    provider: str,
+    url: str,
+    title: str,
+    html: str,
+    *,
+    query: str = "",
 ) -> SearchPageEvidence:
     """Name the kind of page a search landed on, and show the counts behind it.
 
@@ -185,10 +190,16 @@ def classify_search_page(
     page, and a page that never rendered is reported before a page that is
     empty, so `zero_results` is only ever returned for a page that positively
     states it found nothing.
+
+    `query` is the caller's own words. It is subtracted from the text markers
+    are matched against, because a search page repeats those words back at us:
+    searching "sqlite no results" puts "no results" in the page title, and the
+    page is then indistinguishable from a zero-hit page unless the echo is
+    removed before the markers run.
     """
     soup = BeautifulSoup(html, "html.parser")
     text = soup.get_text(" ", strip=True)
-    haystack = " ".join((url.lower(), title.lower(), text[:4000])).lower()
+    haystack = _status_haystack(html, provider, url, title, query)
     anchors, opaque = _count_result_anchors(soup, provider, base_url=url)
     evidence = SearchPageEvidence(
         result_anchors=anchors,
@@ -202,6 +213,46 @@ def classify_search_page(
             return evidence
     evidence.kind, evidence.marker, evidence.detail = _fallback_check(evidence)
     return evidence
+
+
+def _status_haystack(html: str, provider: str, url: str, title: str, query: str) -> str:
+    """Text the provider wrote about its own state, with the caller's words out.
+
+    Markers describe the provider: "no results found", "unusual traffic",
+    "just a moment". Matched against the whole page they also match the
+    caller's query echoed in the title and result snippets about cookies, and a
+    page with three real results becomes a zero-hit page or a consent wall —
+    which also stops a cascade that should have continued.
+
+    So result containers (the provider quoting other sites) and form fields
+    (the search box quoting the caller) come out, the URL is stripped to its
+    path, and the query phrase itself is deleted from what remains.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    for node in soup.select(", ".join(RESULT_CONTAINERS[provider])):
+        node.decompose()
+    for node in soup(["form", "input", "textarea", "script", "style", "noscript"]):
+        node.decompose()
+    path = urlsplit(url)._replace(query="", fragment="").geturl()
+    joined = " ".join((path, title, soup.get_text(" ", strip=True)[:4000])).lower()
+    return _strip_query_text(joined, query)
+
+
+def _strip_query_text(haystack: str, query: str) -> str:
+    """Delete the caller's phrase, plain and URL-encoded, from the haystack."""
+    cleaned = haystack
+    phrase = query.strip().lower()
+    if not phrase:
+        return cleaned
+    encoded = quote_plus(phrase)
+    for needle in (
+        phrase,
+        encoded,
+        encoded.replace("+", "%20"),
+        phrase.replace(" ", "+"),
+    ):
+        cleaned = cleaned.replace(needle, " ")
+    return cleaned
 
 
 def _wall_check(
