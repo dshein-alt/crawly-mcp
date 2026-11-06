@@ -227,8 +227,8 @@ def _status_haystack(html: str, provider: str, url: str, title: str, query: str)
     So result containers (the provider quoting other sites) and the echo
     positions — the search box, and the <title> node that get_text() would
     otherwise fold into the body — come out, the URL is stripped to its path,
-    and the query phrase is deleted from the title, which is where providers
-    quote it back.
+    and query echoes are removed from the title and labelled summaries such
+    as "Search results for ...". Provider status statements stay intact.
     """
     soup = BeautifulSoup(html, "html.parser")
     for node in soup.select(", ".join(RESULT_CONTAINERS[provider])):
@@ -243,25 +243,43 @@ def _status_haystack(html: str, provider: str, url: str, title: str, query: str)
     # the body too deletes the provider's own statement: searching "results"
     # removes that word from "No results for results", and the zero-hit page is
     # then read as a results page full of unrelated links.
-    body = soup.get_text(" ", strip=True)[:4000]
+    body = _strip_body_query_echoes(soup.get_text(" ", strip=True), query)[:4000]
     return " ".join((path, _strip_query_text(title, query), body)).lower()
 
 
 def _strip_query_text(text: str, query: str) -> str:
     """Delete the caller's phrase, plain and URL-encoded, from one echo position."""
-    cleaned = text
+    cleaned = text.lower()
     phrase = query.strip().lower()
     if not phrase:
         return cleaned
-    encoded = quote_plus(phrase)
+    encoded = quote_plus(phrase).lower()
     for needle in (
         phrase,
         encoded,
         encoded.replace("+", "%20"),
         phrase.replace(" ", "+"),
     ):
-        cleaned = cleaned.replace(needle, " ")
+        cleaned = re.sub(rf"(?<!\w){re.escape(needle)}(?!\w)", " ", cleaned)
     return cleaned
+
+
+def _strip_body_query_echoes(text: str, query: str) -> str:
+    """Remove labelled query echoes without changing the provider's statement.
+
+    In both "Search results for no results" and "No results for no results",
+    only the words after "results for" quote the query. The latter must keep
+    its leading "No results", even when that is also what the caller typed.
+    """
+    phrase = r"\s+".join(re.escape(word) for word in query.split())
+    if not phrase:
+        return text
+    pattern = (
+        r"(\b(?:results\s+(?:for|matching)|searched\s+for|search\s+for|"
+        r"your\s+search\s*[:\-])\s*[\"'\u201c\u2018]?)"
+        rf"{phrase}(?!\w)"
+    )
+    return re.sub(pattern, r"\1 ", text, flags=re.IGNORECASE)
 
 
 def _wall_check(

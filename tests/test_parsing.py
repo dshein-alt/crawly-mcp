@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from crawly_mcp.parsing import (
     SearchFormHit,
     build_search_url,
@@ -534,5 +536,49 @@ def test_the_echo_is_removed_from_the_title_not_from_the_prose() -> None:
         "no results at DuckDuckGo",
         html,
         query="no results",
+    )
+    assert evidence.kind == "zero_results"
+
+
+@pytest.mark.parametrize("query", ["Cookie Consent", "SQLite No Results"])
+def test_mixed_case_title_echo_is_not_a_status(query: str) -> None:
+    evidence = classify_search_page(
+        "duckduckgo",
+        "https://duckduckgo.com/?q=test",
+        f"{query} at DuckDuckGo",
+        _fixture("duckduckgo_results.html"),
+        query=query,
+    )
+    assert evidence.kind == "results"
+
+
+@pytest.mark.parametrize(
+    "heading",
+    [
+        "Search results for <em>No Results</em>",
+        "Results matching 'no results'",
+        "You searched for no results",
+    ],
+)
+def test_labelled_body_echo_cannot_fake_a_zero_hit_page(heading: str) -> None:
+    html = (
+        f"<html><body><h1>{heading}</h1><article>"
+        '<a class="result__a" href="https://example.com/answer">Answer</a>'
+        "</article></body></html>"
+    )
+    evidence = classify_search_page(
+        "duckduckgo", "https://duckduckgo.com/", "Search", html, query="no results"
+    )
+    assert evidence.kind == "results"
+    assert evidence.result_anchors == 1
+
+
+@pytest.mark.parametrize("query", ["results", "no results", "Cookie Consent"])
+def test_zero_hit_statement_survives_a_matching_body_echo(query: str) -> None:
+    html = _fixture("duckduckgo_zero_results.html").replace(
+        "zzqxvplm qkfwjzb tmvqxoze", query
+    )
+    evidence = classify_search_page(
+        "duckduckgo", "https://duckduckgo.com/", query, html, query=query
     )
     assert evidence.kind == "zero_results"

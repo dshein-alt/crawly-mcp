@@ -34,6 +34,8 @@ Make every tool result say what happened and what to do next, so a caller can te
 - `search` skips a provider that has failed repeatedly, and reports the skip.
 - Tool descriptions and server instructions state the status contract, including that an empty result with a non-`no_results` status is a tool failure and not evidence of an empty web.
 
+### Fixed
+- Preserve genuine zero-result messages while excluding query echoes from titles and labelled body text, regardless of case.
 ## [0.3.1] - 2026-05-12
 
 ### Changed
