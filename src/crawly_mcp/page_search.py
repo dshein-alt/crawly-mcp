@@ -221,7 +221,7 @@ class OpenSearchTier:
         return TierExecutionResult(
             results=_snippets_from_html(html, query, base_url=results_url),
             results_url=results_url,
-            wall=_page_wall(html, results_url),
+            wall=_page_wall(html),
         )
 
     @staticmethod
@@ -430,7 +430,7 @@ class FormTier:
         return TierExecutionResult(
             results=_snippets_from_html(html, query, base_url=results_url),
             results_url=results_url,
-            wall=_page_wall(html, results_url),
+            wall=_page_wall(html),
         )
 
     @staticmethod
@@ -546,7 +546,7 @@ class PageSearchService:
                 await URLSafetyGuard().validate_user_url(request.url)
                 source_html = await self._fetch_source_html(request.url)
 
-                source_wall = _page_wall(source_html, request.url)
+                source_wall = _page_wall(source_html)
                 if source_wall is not None:
                     # Nothing below can be trusted: a wall answers every query
                     # with an empty page, and calling that "no results on this
@@ -792,16 +792,15 @@ class PageSearchService:
         return _truncate_page_search_response(response)
 
 
-def _page_wall(html: str, url: str) -> str | None:
+def _page_wall(html: str) -> str | None:
     """Name the wall a page served us, if it served one, else None.
 
     Deliberately stricter than the fetch path's challenge detector, which only
     has to decide whether to wait a moment and re-read. This verdict tells a
-    caller a site refused to be searched, so it fires only when the page's own
-    heading positions name a wall *and* the page is thin: a wall announces
-    itself in the title and has nothing else to say. A docs page titled
-    "Challenge handling" with 5 KiB of prose is content, not a wall, and a
-    false positive here reports a searchable site as refused.
+    caller a site refused to be searched, so it requires a thin page with an
+    interstitial instruction in a heading or an actual verification widget.
+    Generic topic words such as "challenge" and "captcha", including in the
+    URL, say nothing about whether the site refused access.
     """
     soup = BeautifulSoup(html, "html.parser")
     positions: list[str] = []
@@ -809,14 +808,22 @@ def _page_wall(html: str, url: str) -> str | None:
         positions.append(soup.title.get_text(" ", strip=True))
     for heading in soup.find_all(["h1", "h2"]):
         positions.append(heading.get_text(" ", strip=True))
-    positions.append(urlsplit(url)._replace(query="", fragment="").geturl())
     probe = " ".join(positions).lower()
 
     for marker in CHALLENGE_MARKERS:
+        if marker in {"challenge", "captcha", "aubis", "security check"}:
+            continue
         if marker in probe:
             if len(soup.get_text(" ", strip=True)) > PAGE_SEARCH_WALL_MAX_TEXT_CHARS:
                 return None
             return marker
+    if len(soup.get_text(" ", strip=True)) <= PAGE_SEARCH_WALL_MAX_TEXT_CHARS and (
+        soup.select_one(
+            "iframe[src*='recaptcha'], iframe[src*='hcaptcha'], .g-recaptcha, "
+            ".h-captcha, form#challenge-form, #cf-challenge-running"
+        )
+    ):
+        return "captcha"
     return None
 
 

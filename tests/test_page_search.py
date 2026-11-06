@@ -837,15 +837,13 @@ async def test_a_docs_page_about_walls_is_not_treated_as_a_wall(
 
 
 def test_page_wall_needs_both_a_wall_heading_and_a_thin_page() -> None:
-    assert _page_wall(_fixture("site/captcha.html"), "https://example.com/")
+    assert _page_wall(_fixture("site/captcha.html"))
     assert _page_wall(
         "<html><head><title>Just a moment</title></head><body>thin</body></html>",
-        "https://example.com/",
     )
     assert (
         _page_wall(
             "<html><head><title>Guide</title></head><body><p>captcha</p></body></html>",
-            "https://example.com/guide",
         )
         is None
     )
@@ -854,7 +852,6 @@ def test_page_wall_needs_both_a_wall_heading_and_a_thin_page() -> None:
             "<html><head><title>Captcha reference</title></head><body><p>"
             + "reference text. " * 300
             + "</p></body></html>",
-            "https://example.com/captcha",
         )
         is None
     )
@@ -930,6 +927,32 @@ async def test_form_tier_marks_a_wall_on_its_own_results_page() -> None:
 
     assert outcome.wall == "checking your browser"
     assert outcome.results  # it did extract the wall's copy as a snippet
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("title", ["Challenge handling", "CAPTCHA reference"])
+async def test_short_documentation_is_searchable(
+    _noop_ssrf_guard: None, title: str
+) -> None:
+    browser = _FakeBrowser(
+        html=f"<html><title>{title}</title><h1>{title}</h1>"
+        "<p>Use Python to handle browser challenges.</p></html>"
+    )
+    service = _make_service_with_tiers(browser, [TextTier()])
+    response = await service.search(
+        url="https://captcha.example.com/challenges", query="Python"
+    )
+    assert response.status == "ok"
+    assert response.results
+
+
+def test_captcha_widget_is_wall_evidence() -> None:
+    assert (
+        _page_wall(
+            '<html><title>Verify</title><div class="g-recaptcha"></div></html>',
+        )
+        == "captcha"
+    )
 
 
 @pytest.mark.asyncio
