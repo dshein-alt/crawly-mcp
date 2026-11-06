@@ -397,3 +397,20 @@ def test_unknown_provider_names_in_configuration_are_ignored(monkeypatch) -> Non
 
     assert svc.provider_order() == ["duckduckgo"]
     assert svc.excluded_providers() == frozenset()
+
+
+@pytest.mark.asyncio
+async def test_searxng_malformed_shape_cascades(monkeypatch) -> None:
+    """A body we cannot read is a provider failure, never an empty search."""
+    monkeypatch.setenv("CRAWLY_SEARXNG_URL", "https://pinned.example/")
+    adapter = AsyncMock(
+        return_value=SearxngOutcome(error="'results' was str, expected a list")
+    )
+    svc = _make_service(monkeypatch, adapter=adapter)
+
+    resp = await svc.search(provider="searxng", context="x")
+
+    assert resp.status == "ok"
+    assert resp.attempted[0].status == "unavailable"
+    assert "expected a list" in resp.attempted[0].detail
+    svc._attempt_browser.assert_awaited_once()

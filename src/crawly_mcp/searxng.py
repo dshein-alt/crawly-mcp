@@ -120,36 +120,76 @@ def _outcome_from_payload(payload: object, instance_url: str) -> SearxngOutcome:
         if str(entry).strip()
     )
 
-    raw_results = payload.get("results") or []
-    if "results" not in payload and error_text is None:
-        # An answer with no results field at all is a shape we do not know how
-        # to read, which is not the same as a search that found nothing.
-        error_text = "response carried no 'results' field"
-    urls: list[str] = []
-    seen: set[str] = set()
-    for entry in raw_results:
-        if not isinstance(entry, dict):
-            continue
-        raw_url = (entry.get("url") or "").strip()
-        if not raw_url:
-            continue
-        parsed = urlsplit(raw_url)
-        if parsed.scheme not in {"http", "https"}:
-            continue
-        if raw_url in seen:
-            continue
-        seen.add(raw_url)
-        urls.append(raw_url)
-        if len(urls) >= MAX_SEARCH_RESULTS:
-            break
+    entries, shape_error = _result_entries(payload)
+    if shape_error and error_text is None:
+        error_text = shape_error
+
+    urls, malformed = _harvest_urls(entries)
+    if malformed and error_text is None:
+        error_text = (
+            "malformed result entries: " + ", ".join(sorted(set(malformed)))[:120]
+        )
 
     logger.debug(
         "searxng payload instance={} raw={} returned={} error={!r}",
         instance_url,
-        len(raw_results),
+        len(entries),
         len(urls),
         error_text,
     )
     return SearxngOutcome(
         urls=urls, error=error_text, unresponsive_engines=unresponsive_names
     )
+
+
+def _result_entries(payload: dict) -> tuple[list[object], str | None]:
+    """Validate the `results` shape before anything iterates it.
+
+    `{"results": "abc"}` iterates as characters and `{"results": {}}` as keys;
+    reading either as a result list invents an empty search and stops the
+    cascade on a provider that never answered. A missing field is the same
+    unreadable shape, not a search that found nothing.
+    """
+    if "results" not in payload:
+        return [], "response carried no 'results' field"
+    raw = payload["results"]
+    if raw is None:
+        return [], None
+    if isinstance(raw, list):
+        return raw, None
+    return [], f"'results' was {type(raw).__name__}, expected a list"
+
+
+def _harvest_urls(entries: list[object]) -> tuple[list[str], list[str]]:
+    """Take http(s) URLs out of result entries, reporting what cannot be read.
+
+    An entry whose URL is not a string used to raise AttributeError out of the
+    adapter, past the cascade's provider-error handling; it is now a named shape
+    failure the cascade can move on from.
+    """
+    urls: list[str] = []
+    malformed: list[str] = []
+    seen: set[str] = set()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            malformed.append(f"entry is {type(entry).__name__}")
+            continue
+        raw_url = entry.get("url")
+        if raw_url is None:
+            continue
+        if not isinstance(raw_url, str):
+            malformed.append(f"url is {type(raw_url).__name__}")
+            continue
+        cleaned = raw_url.strip()
+        if not cleaned:
+            continue
+        parsed = urlsplit(cleaned)
+        if parsed.scheme not in {"http", "https"}:
+            continue
+        if cleaned in seen:
+            continue
+        seen.add(cleaned)
+        urls.append(cleaned)
+        if len(urls) >= MAX_SEARCH_RESULTS:
+            break
+    return urls, malformed

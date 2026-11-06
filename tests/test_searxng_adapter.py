@@ -270,3 +270,62 @@ async def test_clean_empty_answer_is_a_trustworthy_empty() -> None:
             "https://example.searxng/", "q", client=client, timeout=5.0
         )
     assert outcome.answered_empty is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("results", ["abc", {"a": "b"}, 42])
+async def test_non_list_results_is_a_provider_failure_not_an_empty_search(
+    results: object,
+) -> None:
+    """`{"results": "abc"}` iterates as characters, not as a search."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=json.dumps({"results": results}).encode(),
+            headers={"content-type": "application/json"},
+        )
+
+    async with _make_client(handler) as client:
+        outcome = await searxng_search(
+            "https://example.searxng/", "q", client=client, timeout=5.0
+        )
+    assert outcome.urls == []
+    assert outcome.error
+    assert outcome.answered_empty is False
+
+
+@pytest.mark.asyncio
+async def test_non_string_url_fails_the_shape_instead_of_raising() -> None:
+    """`{"url": 42}` used to raise AttributeError past the cascade's handling."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=json.dumps({"results": [{"url": 42}]}).encode(),
+            headers={"content-type": "application/json"},
+        )
+
+    async with _make_client(handler) as client:
+        outcome = await searxng_search(
+            "https://example.searxng/", "q", client=client, timeout=5.0
+        )
+    assert outcome.urls == []
+    assert "url is int" in outcome.error
+
+
+@pytest.mark.asyncio
+async def test_non_dict_entry_fails_the_shape() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=json.dumps({"results": ["just a string"]}).encode(),
+            headers={"content-type": "application/json"},
+        )
+
+    async with _make_client(handler) as client:
+        outcome = await searxng_search(
+            "https://example.searxng/", "q", client=client, timeout=5.0
+        )
+    assert outcome.error
+    assert "entry is str" in outcome.error
