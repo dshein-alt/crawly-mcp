@@ -41,6 +41,9 @@ Make every tool result say what happened and what to do next, so a caller can te
 - Keep short documentation about challenges and CAPTCHAs searchable while rejecting actual interstitials.
 - Continue provider cascading when SearXNG returns null results, malformed URLs, or malformed engine-failure metadata.
 - Continue provider cascading when browser context or tab creation fails, and close unused ephemeral contexts.
+- Pin the release fingerprint check to Ubuntu 24.04 so Patchright can install Chromium after `ubuntu-latest` moved to 26.04.
+- Upgrade CI actions to releases that run natively on Node.js 24.
+
 ## [0.3.1] - 2026-05-12
 
 ### Changed
