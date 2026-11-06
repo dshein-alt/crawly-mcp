@@ -96,6 +96,16 @@ PageKind = Literal[
 TierOutcome = Literal["ok", "empty", "failed", "unavailable"]
 
 MAX_SEARCH_RESULTS = 5
+
+# Google routes every organic title through `/goto?url=<opaque>`, so a results
+# page carries more result links than the cap and each destination costs its own
+# round-trip. Google answers a concurrent burst of those requests with a defer
+# page, so over-ask for links, resolve them a few at a time, and retry a defer
+# token once before giving up on it.
+OPAQUE_RESOLVE_ATTEMPTS = 12
+OPAQUE_RESOLVE_CONCURRENCY = 2
+OPAQUE_RESOLVE_RETRY_DELAY_SECONDS = 3.0
+
 MAX_FETCH_URLS = 5
 MAX_FETCH_SIZE = 1024 * 1024
 DEFAULT_MAX_FETCH_SIZE = MAX_FETCH_SIZE

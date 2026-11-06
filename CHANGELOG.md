@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.4] - 2026-11-06
+
+### Fixed
+
+- Collect more Google click-through result links than the return cap and resolve them a few at a time, so links the provider throttles no longer shrink the answer below what the page offered.
+- Retry a throttled click-through result link once, following the fresh redirect token the throttle page hands back.
+- Report how many click-through result links resolved when the provider throttled the rest, instead of returning a short URL list with no explanation.
+
 ## [0.4.3] - 2026-11-06
 
 ### Fixed

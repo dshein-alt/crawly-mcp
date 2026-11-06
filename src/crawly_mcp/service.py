@@ -38,6 +38,10 @@ from crawly_mcp.constants import (
     FETCH_PAGE_TIMEOUT_SECONDS,
     FETCH_TOTAL_TIMEOUT_SECONDS,
     MAX_SEARCH_PROVIDERS,
+    MAX_SEARCH_RESULTS,
+    OPAQUE_RESOLVE_ATTEMPTS,
+    OPAQUE_RESOLVE_CONCURRENCY,
+    OPAQUE_RESOLVE_RETRY_DELAY_SECONDS,
     PROVIDER_FAILURE_THRESHOLD,
     PROVIDER_HOMEPAGE,
     SEARCH_CASCADE_TIMEOUT_SECONDS,
@@ -80,6 +84,7 @@ from crawly_mcp.parsing import (
     extract_opaque_result_urls,
     extract_search_results,
     normalize_result_url,
+    parse_defer_redirect_target,
 )
 from crawly_mcp.searxng import searxng_search
 from crawly_mcp.security import URLSafetyGuard
@@ -766,10 +771,20 @@ class WebSearchService:
 
         urls = extract_search_results(provider, html, final_url)
         if not urls and evidence.opaque_anchors:
-            urls = await self._resolve_opaque_results(provider, html, final_url)
+            urls, attempted = await self._resolve_opaque_results(
+                provider, html, final_url
+            )
             if urls:
                 evidence.result_anchors = len(urls)
-                evidence.detail = ""
+                # Naming the loss is what tells a caller an under-filled answer
+                # was throttled rather than a page that genuinely had little on
+                # it; "2 result URL(s)" alone reads as a thin result set.
+                evidence.detail = (
+                    f"{len(urls)} of {attempted} click-through result link(s) "
+                    "resolved; the provider throttled the rest"
+                    if len(urls) < attempted
+                    else ""
+                )
         if not urls:
             detail = (
                 evidence.detail or "results page exposed no extractable result URLs"
@@ -790,16 +805,31 @@ class WebSearchService:
 
     async def _resolve_opaque_results(
         self, provider: str, html: str, final_url: str
-    ) -> list[str]:
-        redirect_urls = extract_opaque_result_urls(provider, html, final_url)
-        guard = URLSafetyGuard()
-        resolved = await asyncio.gather(
-            *(
-                self._resolve_result_redirect(provider, url, final_url, guard)
-                for url in redirect_urls
-            )
+    ) -> tuple[list[str], int]:
+        """Resolve click-through result links: (destinations, links attempted).
+
+        Over-asks for links and staggers the requests. Google answers a
+        concurrent burst of `/goto` requests with a defer page, so firing every
+        link at once and keeping only what answers returns a fraction of the
+        results the page carried.
+        """
+        redirect_urls = extract_opaque_result_urls(
+            provider, html, final_url, limit=OPAQUE_RESOLVE_ATTEMPTS
         )
-        return list(dict.fromkeys(url for url in resolved if url is not None))
+        guard = URLSafetyGuard()
+        semaphore = asyncio.Semaphore(OPAQUE_RESOLVE_CONCURRENCY)
+
+        async def resolve(url: str) -> str | None:
+            async with semaphore:
+                return await self._resolve_result_redirect(
+                    provider, url, final_url, guard
+                )
+
+        resolved = await asyncio.gather(*(resolve(url) for url in redirect_urls))
+        urls = list(dict.fromkeys(url for url in resolved if url is not None))[
+            :MAX_SEARCH_RESULTS
+        ]
+        return urls, len(redirect_urls)
 
     async def _resolve_result_redirect(
         self,
@@ -808,21 +838,51 @@ class WebSearchService:
         final_url: str,
         guard: URLSafetyGuard,
     ) -> str | None:
+        """Resolve one click-through link, retrying a throttle page once.
+
+        A defer page hands back a fresh token as its own next hop, so the retry
+        it asks for is the same request made after its stated delay.
+        """
+        target, defer_url = await self._request_result_target(
+            provider, url, final_url, guard
+        )
+        if target is not None:
+            return target
+        if defer_url is None:
+            return None
+        await asyncio.sleep(OPAQUE_RESOLVE_RETRY_DELAY_SECONDS)
+        retried, _ = await self._request_result_target(
+            provider, defer_url, final_url, guard
+        )
+        return retried
+
+    async def _request_result_target(
+        self,
+        provider: str,
+        url: str,
+        final_url: str,
+        guard: URLSafetyGuard,
+    ) -> tuple[str | None, str | None]:
+        """Return (destination, defer target) for one click-through request.
+
+        Both are None when the request yields neither: a page with no
+        destination and no declared next hop is a refusal, not a result.
+        """
         try:
             await guard.validate_user_url(url)
             response = await self._get_http().get(url, follow_redirects=False)
             if not response.is_redirect:
-                return None
+                return None, self._defer_target(response)
             location = response.headers.get("location")
             if not location:
-                return None
+                return None, None
             target = normalize_result_url(
                 provider,
                 str(response.url.join(location)),
                 base_url=final_url,
             )
             if target is None:
-                return None
+                return None, None
             await guard.validate_user_url(target)
         except (httpx.HTTPError, URLSafetyError, ValueError) as exc:
             logger.debug(
@@ -833,9 +893,22 @@ class WebSearchService:
                 type(exc).__name__,
                 exc,
             )
-            return None
+            return None, None
         else:
-            return target
+            return target, None
+
+    @staticmethod
+    def _defer_target(response: httpx.Response) -> str | None:
+        """The next hop a non-redirect answer declares, if any."""
+        target = parse_defer_redirect_target(response.text, str(response.url))
+        if target is None:
+            logger.debug(
+                "result redirect answer carries no destination and no defer "
+                "target url={!r} status={}",
+                response.url,
+                response.status_code,
+            )
+        return target
 
     async def _read_page(self, page: Any, provider: str) -> tuple[str, str]:
         """Read the landed page, turning a dead tab into a provider failure.

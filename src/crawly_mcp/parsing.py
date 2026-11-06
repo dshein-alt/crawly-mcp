@@ -451,8 +451,19 @@ def extract_search_results(provider: str, html: str, base_url: str) -> list[str]
     return urls
 
 
-def extract_opaque_result_urls(provider: str, html: str, base_url: str) -> list[str]:
-    """Return result redirect URLs whose destinations require resolution."""
+def extract_opaque_result_urls(
+    provider: str,
+    html: str,
+    base_url: str,
+    limit: int = MAX_SEARCH_RESULTS,
+) -> list[str]:
+    """Return result redirect URLs whose destinations require resolution.
+
+    `limit` exceeds `MAX_SEARCH_RESULTS` when the caller intends to drop some:
+    a provider that throttles resolution loses links, and a list trimmed to the
+    cap before the attempts have a throttle budget returns fewer results than
+    the page offered.
+    """
     soup = BeautifulSoup(html, "html.parser")
     seen: set[str] = set()
     urls: list[str] = []
@@ -465,9 +476,35 @@ def extract_opaque_result_urls(provider: str, html: str, base_url: str) -> list[
             continue
         seen.add(absolute)
         urls.append(absolute)
-        if len(urls) >= MAX_SEARCH_RESULTS:
+        if len(urls) >= limit:
             break
     return urls
+
+
+# A defer page names its own next hop: `<meta http-equiv="refresh"
+# content="3;url=/goto?url=...">`. The destination of the result is not in the
+# markup at all, so this is the only target the page yields.
+_META_REFRESH_RE = re.compile(
+    r"""<meta[^>]+http-equiv=["']?refresh["']?[^>]+content=["']?"""
+    r"""\s*\d+\s*;\s*url=([^"'>\s]+)""",
+    re.IGNORECASE,
+)
+
+
+def parse_defer_redirect_target(html: str, base_url: str) -> str | None:
+    """Return the redirect endpoint a defer page points at, if it names one.
+
+    Only a target that is itself a result redirect endpoint counts. A page
+    cannot steer the resolver to an arbitrary host by declaring a refresh; the
+    retry stays on the provider's own click-through path.
+    """
+    match = _META_REFRESH_RE.search(html)
+    if match is None:
+        return None
+    target = urljoin(base_url, match.group(1))
+    if not any(path in target for path in OPAQUE_RESULT_PATHS):
+        return None
+    return target
 
 
 def normalize_result_url(provider: str, href: str, *, base_url: str) -> str | None:

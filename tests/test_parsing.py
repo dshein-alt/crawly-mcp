@@ -10,9 +10,11 @@ from crawly_mcp.parsing import (
     detect_algolia_config,
     detect_opensearch_href,
     detect_search_form,
+    extract_opaque_result_urls,
     extract_search_results,
     is_search_blocked,
     normalize_result_url,
+    parse_defer_redirect_target,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -582,3 +584,33 @@ def test_zero_hit_statement_survives_a_matching_body_echo(query: str) -> None:
         "duckduckgo", "https://duckduckgo.com/", query, html, query=query
     )
     assert evidence.kind == "zero_results"
+
+
+def test_defer_page_target_is_followed_only_when_it_is_a_result_redirect() -> None:
+    """A refresh may point the retry at the redirect endpoint, never a host."""
+    base = "https://www.google.com/goto?url=TOKEN"
+    throttle = (
+        '<html><head><meta http-equiv="refresh" '
+        'content="3;url=/goto?url=FRESH"></head><body></body></html>'
+    )
+    assert (
+        parse_defer_redirect_target(throttle, base)
+        == "https://www.google.com/goto?url=FRESH"
+    )
+
+    # A page that declares a refresh to an arbitrary site is not a throttle
+    # page, and must not be able to aim the resolver at that site.
+    hostile = (
+        '<html><head><meta http-equiv="refresh" '
+        'content="0;url=https://evil.example/pwned"></head></html>'
+    )
+    assert parse_defer_redirect_target(hostile, base) is None
+    assert parse_defer_redirect_target("<html><body>plain</body></html>", base) is None
+
+
+def test_opaque_links_can_be_collected_past_the_return_cap() -> None:
+    """The caller needs a throttle budget, so collection is not capped at 5."""
+    html = _fixture("google_goto_many.html")
+    base = "https://www.google.com/search?q=python&hl=en"
+    assert len(extract_opaque_result_urls("google", html, base)) == 5
+    assert len(extract_opaque_result_urls("google", html, base, limit=12)) == 8

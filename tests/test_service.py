@@ -13,7 +13,10 @@ from patchright.async_api import (
 )
 
 from crawly_mcp.browser import SearchContextHandle
-from crawly_mcp.constants import PROVIDER_HOMEPAGE
+from crawly_mcp.constants import (
+    MAX_SEARCH_RESULTS,
+    PROVIDER_HOMEPAGE,
+)
 from crawly_mcp.errors import (
     ChallengeBlockedError,
     URLSafetyError,
@@ -175,6 +178,114 @@ async def test_google_opaque_result_redirects_are_resolved(
     assert result.provider == "google"
     assert result.urls == list(targets.values())
     assert result.attempted[0].results == 2
+
+
+@pytest.mark.asyncio
+async def test_google_defer_page_is_retried_with_the_token_it_hands_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A throttle page names a fresh token as its own next hop: follow it once.
+
+    Google answers part of a burst of click-through requests with a 200 and no
+    Location, whose only declared target is a refresh back to the same endpoint
+    carrying a new token. Dropping the link there loses a result the page had.
+    """
+    browser = FakeBrowserManager(
+        {
+            "https://www.google.com/search?q=python&hl=en": {
+                "title": "python - Google Search",
+                "html": (FIXTURES / "google_goto_defer.html").read_text(
+                    encoding="utf-8"
+                ),
+            }
+        }
+    )
+    service = WebSearchService(browser)
+    monkeypatch.setattr("crawly_mcp.service.OPAQUE_RESOLVE_RETRY_DELAY_SECONDS", 0.0)
+    monkeypatch.setenv("CRAWLY_SEARCH_PROVIDER_ORDER", "google")
+    monkeypatch.setenv("CRAWLY_SEARCH_MAX_PROVIDERS", "1")
+
+    seen: list[str] = []
+
+    def resolve_redirect(request: httpx.Request) -> httpx.Response:
+        ref = request.url.params["url"]
+        seen.append(ref)
+        if ref == "DEFER":
+            return httpx.Response(
+                200,
+                text='<meta http-equiv="refresh" content="3;url=/goto?url=FRESH">',
+            )
+        if ref == "FRESH":
+            return httpx.Response(302, headers={"Location": "https://www.python.org/"})
+        return httpx.Response(200, text="<html>no destination declared</html>")
+
+    service._http = httpx.AsyncClient(transport=httpx.MockTransport(resolve_redirect))
+
+    async def allow_all(self, url: str) -> None:
+        del self, url
+
+    monkeypatch.setattr(URLSafetyGuard, "validate_user_url", allow_all)
+
+    result = await service.search(provider="google", context="python")
+    await service.aclose()
+
+    assert result.status == "ok"
+    assert result.urls == ["https://www.python.org/"]
+    assert "FRESH" in seen
+
+
+@pytest.mark.asyncio
+async def test_google_resolves_past_the_cap_and_reports_the_throttled_rest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Links dropped to throttling must not shrink the answer below the cap.
+
+    Eight result links, five resolvable: asking for only as many links as the
+    caller may receive spends the whole budget on the links that were throttled.
+    """
+    browser = FakeBrowserManager(
+        {
+            "https://www.google.com/search?q=python&hl=en": {
+                "title": "python - Google Search",
+                "html": (FIXTURES / "google_goto_many.html").read_text(
+                    encoding="utf-8"
+                ),
+            }
+        }
+    )
+    service = WebSearchService(browser)
+    monkeypatch.setattr("crawly_mcp.service.OPAQUE_RESOLVE_RETRY_DELAY_SECONDS", 0.0)
+    monkeypatch.setenv("CRAWLY_SEARCH_PROVIDER_ORDER", "google")
+    monkeypatch.setenv("CRAWLY_SEARCH_MAX_PROVIDERS", "1")
+
+    def resolve_redirect(request: httpx.Request) -> httpx.Response:
+        ref = request.url.params["url"]
+        if ref in {"T6", "T7", "T8"}:
+            return httpx.Response(
+                200,
+                text='<meta http-equiv="refresh" content="3;url=/goto?url=SPENT">',
+            )
+        if ref == "SPENT":
+            return httpx.Response(200, text="<html>still throttled</html>")
+        return httpx.Response(302, headers={"Location": f"https://example.org/{ref}"})
+
+    service._http = httpx.AsyncClient(transport=httpx.MockTransport(resolve_redirect))
+
+    async def allow_all(self, url: str) -> None:
+        del self, url
+
+    monkeypatch.setattr(URLSafetyGuard, "validate_user_url", allow_all)
+
+    result = await service.search(provider="google", context="python")
+    await service.aclose()
+
+    assert result.status == "ok"
+    assert result.urls == [
+        f"https://example.org/T{n}" for n in range(1, MAX_SEARCH_RESULTS + 1)
+    ]
+    # The caller is told the answer is short because of throttling, not because
+    # the page had little on it.
+    assert "5 of 8" in result.attempted[0].detail
 
 
 @pytest.mark.asyncio
