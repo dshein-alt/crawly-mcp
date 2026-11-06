@@ -1,7 +1,7 @@
 # Investigate Yandex CAPTCHA blocks
 
-Status: implemented on branch `yandex-captcha` (0.4.5). Findings below; the
-original brief follows, kept as written.
+Status: implemented on `master` for unreleased version `0.4.4`. Findings below;
+the original brief follows, kept as written.
 
 Yandex returned `blocked` for both an English and a Russian query on
 2026-11-06. Investigate the browser-verification flow and correct any browser
@@ -83,25 +83,26 @@ Yandex serves two walls, and they are not the same page:
 
 | Path | Title | Mechanism | Self-resolves? |
 | --- | --- | --- | --- |
-| `/showcaptchafast` | `Верификация` | `tmgrdfrend` browser check: JS computes `fingerprint`/`chstate`, auto-submits `#tmgrdfrend-form` to `/checkcaptchafast`, which redirects to `retpath` (the real results URL, base64 in the query) | **Yes, at t≈1s** |
+| `/showcaptchafast` | `Верификация` | `tmgrdfrend` browser check: JS computes `fingerprint`/`chstate`, auto-submits `#tmgrdfrend-form` to `/checkcaptchafast`, which redirects to `retpath` (the real results URL, base64 in the query) | **Can resolve automatically** |
 | `/showcaptcha?cc=1` | `Вы не робот?` | Yandex SmartCaptcha `#checkbox-captcha-form`, `CheckboxCaptcha` widget, submit `#js-button` | **No** (observed 20s, no transition) |
 
 The first is a **transient state that forks**, not a wall in its own right.
-Sampling the page at fixed offsets after navigation (`scripts/yandex_wall_probe.py`;
-each run is its own control, because variants run at different moments are
-confounded by Yandex's time-varying rate limits):
+The original probe observed these transition sequences. Its timestamps used
+scheduled offsets from a clock started before navigation, so they do not
+establish precise durations after navigation. The corrected probe starts after
+navigation completes and records actual elapsed time for each reading.
 
 ```
-0.0:auto/0  1.0:res/0   2.0:res/82   <- fork to results
-0.0:auto/0  1.0:sma/0   2.0:sma/0  ... 20.0:sma/0   <- fork to SmartCaptcha
+auto/0 -> search/0 -> search/82   <- fork to rendered results
+auto/0 -> smartcaptcha/0         <- fork to human verification
 ```
 
 - 5 cold-profile runs landing on `showcaptchafast`: 1 forked to results, 4 to
-  SmartCaptcha. The fork completes by t≈1.0s in every case.
+  SmartCaptcha.
 - Warm profile: 19/20 runs land directly on results; the one wall (first request
-  on a fresh profile) resolved at t=1.0s to 81 anchors.
-- At t=1.0s on a resolved run the URL is already `/search` with **0 anchors**;
-  anchors appear by t=2.0s. A settle that stops at the URL change extracts
+  on a fresh profile) resolved to 81 anchors.
+- On a resolved run the URL changed to `/search` with **0 anchors** before
+  the results rendered. A settle that stops at the URL change extracts
   nothing and reports `unavailable`.
 - Warm-up is load-bearing: dropping it turned 1/5 clean runs into 4/5
   SmartCaptcha. It lands on `dzen.ru` (yandex.ru redirects there) and still
@@ -118,7 +119,7 @@ bounded settle window, and make it budget-aware against the provider deadline
 requires a human click, so `blocked` stays fast and names the wall the provider
 actually ended on. No CAPTCHA solving, no proxy rotation, no clicking.
 
-## Verification (0.4.5)
+## Original branch verification
 
 Paired A/B, baseline `ccd91e5` against this branch, interleaved order, identical
 cold profiles, `MAX_PROVIDERS=1`, three queries (`scripts/ab_yandex.sh 6`):
@@ -144,4 +145,36 @@ Cascade: with `yandex,duckduckgo` and a walled Yandex, DuckDuckGo answers
 Latency: clean searches 3.2–4.8s end to end, unchanged — a page that is not
 mid-flight is returned from the settle without a poll, so nothing is spent.
 
-Tests: 323 pass. `ruff check` and `ruff format --check` clean.
+Original branch validation: 323 tests passed; Ruff lint and formatting were clean.
+
+## Review fixes and verification
+
+Search now passes its known snapshot into the settle instead of rereading the
+moving page at entry. Every poll and page read shares the settle deadline;
+navigation errors and stalled reads retain the last successful snapshot and its
+URL. External cancellation still propagates. The settle reserves trace capture
+time, and trace capture itself is capped by the remaining provider budget.
+
+The wall probe starts its clock after navigation and records actual elapsed
+time separately from the requested offset. Its answer summary requires a
+classified results page with organic anchors.
+
+Fresh production checks on 2026-11-06 used separate cold profiles with tracing
+enabled and Yandex as the only provider:
+
+| Query | Initial page | Outcome | URLs | Total seconds |
+| --- | --- | --- | --- | --- |
+| `python` | Automatic check | `ok` | 5 | 5.610 |
+| `документация Python` | SmartCaptcha | `blocked` | 0 | 3.232 |
+| `алгоритмы сортировки` | Automatic check | `ok` | 5 | 4.696 |
+
+Responses and traces are in
+`/tmp/crawly_yandex_review/live-ts1x1szx/`. These temporary artifacts may require
+recapture. Both automatic checks reached results, while SmartCaptcha spent no
+settle window.
+
+Validation: 330 tests passed; `uv run ruff check .`,
+`uv run ruff format --check .`, and `git diff --check` passed. Regression tests
+cover the first polling read failing during navigation, stalled reads, results
+rendering after a URL change, caller cancellation, and settle plus trace cleanup
+sharing the provider budget.
