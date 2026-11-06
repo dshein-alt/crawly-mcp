@@ -290,7 +290,8 @@ async def probe_live_provider(endpoint: str, provider: str) -> str:
 # --- stack lifecycle --------------------------------------------------------
 
 
-def _compose(*args: str, capture: bool = False) -> str:
+def _compose(*args: str, check: bool = True, capture: bool = False) -> int:
+    """Run `docker compose` against the test overlay; return its exit code."""
     # Fixed argv: the docker compose CLI, no shell, no interpolated input.
     cmd = ["docker", "compose"]
     for name in COMPOSE_FILES:
@@ -299,11 +300,25 @@ def _compose(*args: str, capture: bool = False) -> str:
     result = subprocess.run(  # noqa: S603 - fixed argv, no shell, no interpolation
         cmd,
         cwd=COMPOSE_DIR,
-        check=True,
+        check=check,
         capture_output=capture,
         text=True,
     )
-    return result.stdout or ""
+    return result.returncode
+
+
+def _build() -> None:
+    """Build the stack, without pulling base layers we do not need to refresh.
+
+    `--pull=false` keeps the build offline-friendly and docker compose accepts
+    it; podman-compose's docker shim rejects the flag and exits before the
+    stack ever starts. A rejected flag is not a build failure, so fall back to
+    a plain build rather than telling the operator the stack is broken.
+    """
+    if _compose("build", "--pull=false", check=False) == 0:
+        return
+    print("compose rejected `build --pull=false`; retrying with a plain build")
+    _compose("build")
 
 
 async def _wait_ready(endpoint: str, attempts: int = 60) -> None:
@@ -364,7 +379,7 @@ def main() -> int:
 
     if not args.skip_build:
         print("Building the stack from this checkout...")
-        _compose("build", "--pull=false")
+        _build()
     print("Starting the stack...")
     _compose("up", "-d")
     exit_code = 1
