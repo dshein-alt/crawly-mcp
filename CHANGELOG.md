@@ -36,6 +36,7 @@ Make every tool result say what happened and what to do next, so a caller can te
 
 ### Fixed
 - Preserve genuine zero-result messages while excluding query echoes from titles and labelled body text, regardless of case.
+- Classify DNS resolution failures as `navigation_failed`, so a transient resolver failure keeps cascading.
 ## [0.3.1] - 2026-05-12
 
 ### Changed

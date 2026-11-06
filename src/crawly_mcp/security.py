@@ -153,7 +153,7 @@ class URLSafetyGuard:
             )
         except socket.gaierror as exc:
             raise URLSafetyError(
-                "invalid_url", f"failed to resolve hostname {host!r}"
+                "navigation_failed", f"failed to resolve hostname {host!r}"
             ) from exc
 
         addresses: list[IPAddress] = []
@@ -167,7 +167,7 @@ class URLSafetyGuard:
 
         if not addresses:
             raise URLSafetyError(
-                "invalid_url",
+                "navigation_failed",
                 f"hostname {host!r} did not resolve to a usable IP address",
             )
 
